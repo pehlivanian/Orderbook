@@ -6,6 +6,7 @@
 #include <array>
 #include <memory>
 #include <iostream>
+#include <vector>
 #include <fstream>
 #include <fstream>
 #include <regex>
@@ -14,12 +15,13 @@
 
 #include "utils.hpp"
 
+using namespace Message;
 using namespace Utils;
 
 using order = struct order;
 
 //
-// T ~ BookSide<OrderStatisticsTreeAdaptor<int, std::less<T>>
+// T ~ BookSide<OrderStatisticsTreeAdaptor<int, std::less<int>>
 //
 
 template<typename T>
@@ -56,7 +58,7 @@ template<typename Container>
 std::ostream& operator<<(std::ostream&, const BookSide<Container>*);
 
 //
-// Container ~ OrderStatisticsTreeAdaptor<int, std::less<T>>
+// Container ~ OrderStatisticsTreeAdaptor<int, std::less<int>>
 //
 
 template<typename Container>
@@ -94,12 +96,16 @@ template<typename BidContainer, typename AskContainer>
 class OrderBook {
 public:
 
-  const std::string input_file = "input.dat";
+  // const std::string input_file = "input.dat";
+  const std::string input_file = "GOOG_2012-06-21_34200000_57600000_message_1.csv";
 
   OrderBook();
   void replay();
   
 private:
+
+  
+
   std::unique_ptr<BookSide<BidContainer>> bidSide_;
   std::unique_ptr<BookSide<AskContainer>> askSide_;
 

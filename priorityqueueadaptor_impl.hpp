@@ -1,6 +1,31 @@
 #ifndef __PRIORITYQUEUEADAPTOR_IMPL_HPP__
 #define __PRIORITYQUEUEADAPTOR_IMPL_HPP__
 
+template<typename Compare, int N>
+void 
+PriorityQueueAdaptor<Compare, N>::insert_(const order& o) {
+  ;
+}
+
+template<typename Compare, int N>
+void
+PriorityQueueAdaptor<Compare, N>::remove_(const order& o) {
+  ;
+}
+
+template<typename Compare, int N>
+void
+PriorityQueueAdaptor<Compare, N>::update_(const order& o) {
+  ;
+}
+
+template<typename Compare, int N>
+void
+PriorityQueueAdaptor<Compare, N>::execute_(const order& o) {
+  ;
+}
+
+/*
 template<typename Compare>
 void
 PriorityQueueAdaptor::insert_(const order& o, int l) {
@@ -47,5 +72,5 @@ void update_(const order& o, int l) {
     popped.pop();
   }  
 }
-
+*/
 #endif

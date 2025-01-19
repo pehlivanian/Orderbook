@@ -8,6 +8,7 @@
 #include "utils.hpp"
 
 using namespace Utils;
+using namespace Message;
 
 template<typename T, typename Compare=std::less<T>>
 class OrderStatisticsTree {
@@ -218,15 +219,16 @@ public:
 
 };
 
-template<typename Compare>
+template<typename Compare, int N>
 class OrderStatisticsTreeAdaptor {
 public:
 
   OrderStatisticsTreeAdaptor() : book_{OrderStatisticsTree<order, Compare>{}} {}
 
-  void insert_(const order&, int);
-  void remove_(const order&, int);
-  void update_(const order&, int);
+  void insert_(const order&);
+  void remove_(const order&);
+  void update_(const order&);
+  void execute_(const order&);
 
 private:
   OrderStatisticsTree<order, Compare> book_;

@@ -15,7 +15,7 @@ BookSide<Container>::processEvent(const order& o, int l, char msgType) {
     BookFeeder<BookSide<Container>>::update(o);
     break;
   case('E'):
-    BookFeeder<BookSide<Container>>::update(o);
+    BookFeeder<BookSide<Container>>::execute(o);
     break;
   }
 }
@@ -31,29 +31,33 @@ void
 OrderBook<BidContainer, AskContainer>::replay() {
   boost::filesystem::path path = boost::filesystem::current_path();
   path /= input_file;
+  
 
-  auto events = readData(path.string());
-  for (auto &[seqNum,
-	      msgType,
-	      side,
-	      level,
+  std::vector<eventLOBSTER> events = readDataLOBSTER(path.string());
+
+  for (auto &[tme,
+	      eventType,
+	      orderId,
+	      sze,
 	      price,
-	      size]: events) {
+	      direction] : events) {
     
-    order ord = order{seqNum, price, size};
+    order ord = order{direction, tme, orderId, price, sze};
 
-    switch (side) {
+    switch (direction) {
     case('B'):
-      std::cout << "BIDMSG: " << msgType << " : " << ord << " : " << level << std::endl;
-      std::cout << "BIDBOOK BEFORE: " << *bidSide_ << std::endl;
-      bidSide_->processEvent({seqNum, price, size}, level, msgType);
-      std::cout << "BIDBOOK AFTER: " << *bidSide_ << std::endl;
+      std::cout << "BIDMSG: " << eventType << " : " << ord << std::endl;
+
+      // std::cout << "BIDBOOK BEFORE: " << *bidSide_ << std::endl;
+      // bidSide_->processEvent({seqNum, price, size}, level, msgType);
+      // std::cout << "BIDBOOK AFTER: " << *bidSide_ << std::endl;
       break;
     case('S'):
-      std::cout << "ASKMSG: " << msgType << " : " << ord << " : " << level << std::endl;
-      std::cout << "ASKBOOK BEFORE: " << *askSide_ << std::endl;
-      askSide_->processEvent({seqNum, price, size}, level, msgType);
-      std::cout << "ASKBOOK AFTER: " << *askSide_ << std::endl;
+      std::cout << "ASKMSG: " << eventType << " : " << ord << std::endl;
+  
+      // std::cout << "ASKBOOK BEFORE: " << *askSide_ << std::endl;
+      // askSide_->processEvent({seqNum, price, size}, level, msgType);
+      // std::cout << "ASKBOOK AFTER: " << *askSide_ << std::endl;
 
       break;
     }

@@ -1,6 +1,19 @@
 #ifndef __UTILS_HPP__
 #define __UTILS_HPP__
 
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <errno.h>
+#include <stdarg.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <chrono>
+#include <atomic>
+#include <sstream>
+ #include <iomanip>
+
 #include <string>
 #include <string_view>
 #include <cmath>
@@ -10,13 +23,17 @@
 
 #include <boost/filesystem.hpp>
 
-struct order {    
+namespace Message {
+
+struct order {   
+  char side_;
+  double time_;
   unsigned long seqNum_;
   long price_;
   unsigned long size_;
   
-  bool operator=(const Utils::order& rhs) {
-    return fabs(price_ - rhs.price_) < std::numeric_limits<double>::epsilon();
+  bool operator==(const Message::order& rhs) {
+    return (side_ == rhs.side_) && (fabs(price_ - rhs.price_) < std::numeric_limits<double>::epsilon());
     }
 };
 
@@ -30,13 +47,15 @@ struct event {
 };
 
 struct eventLOBSTER {
-  float time_;
-  char eventType_;
+  double time_;
+  short eventType_;
   unsigned long orderId_;
   unsigned size_;
-  float price_;
+  long price_;
   char direction_;
 };
+
+} // namespace Message
 
 namespace Utils {
 
@@ -96,15 +115,15 @@ namespace Utils {
     return tokens;
   }
 
-  std::ostream& operator<<(std::ostream& os, const order& o) {
+  std::ostream& operator<<(std::ostream& os, const Message::order& o) {
     os << "{ "
        << o.seqNum_ << ", "
-       << o.price_ << ", "
-       << o.size_ << "}";
+       << o.price_  << ", "
+       << o.size_   << "}";
     return os;
   }
 
-  std::ostream& operator<<(std::ostream& os, const event& e) {
+  std::ostream& operator<<(std::ostream& os, const Message::event& e) {
     os << "{ " 
        << e.seqNum  << ", "
        << e.msgType << ", "
@@ -114,32 +133,93 @@ namespace Utils {
        << e.size    << "}";
     return os;
   }
+
+  std::ostream& operator<<(std::ostream& os, const Message::eventLOBSTER& e) {
+    os << "{"
+       << std::setprecision(14) << e.time_ << ", "
+       << e.eventType_ << ", "
+       << e.orderId_ << ", "
+       << e.size_ << ", "
+       << e.price_ << ", "
+       << e.direction_ << "}";
+    return os;
+  }
+
+  void check(int test, const char* message, ...) {
+    if (test) {
+      va_list args;
+      va_start(args, message);
+      vfprintf(stderr, message, args);
+      va_end(args);
+      fprintf(stderr, "\n");
+      exit(EXIT_FAILURE);
+    }
+  }
+
+  std::size_t fileSize(const std::string& fn) {
+    std::ifstream ifs{fn, std::ifstream::binary};
+    std::filebuf* pbuf = ifs.rdbuf();
+    std::size_t size = pbuf->pubseekoff(0, ifs.end, ifs.in);;
+    return size;
+  }
+
+  const char* read_mmap(const char* fn) {
+
+    const char* mapped;
+    std::size_t size = fileSize(fn);
+
+    int fd = open(fn, O_RDONLY);
+    check(fd < 0, "open %s failed: %s", fn, strerror(errno));
+
+    mapped = (char*)mmap(0, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    check(mapped == MAP_FAILED, "mmap %s failed: %s", fn, strerror(errno));
+
+    return mapped;
+  }
   
-  std::vector<eventLOBSTER> readDataLOBSTER(const boost:filesystem::path& path) {
+  std::vector<Message::eventLOBSTER> readDataLOBSTER(const boost::filesystem::path& path) {
     
     /*
       struct eventLOBSTER {
       float time_;
-      char eventType_;
+      short eventType_;
       unsigned long orderId_;
       unsigned size_;
-      float price_;
+      long price_;
       char direction_;
       };
     */
 
-    std::vector<eventLOBSTER> res;
+    std::vector<Message::eventLOBSTER> res;
 
     std::string line;
     std::ifstream fh{path.string()};
-    while (std::getline(fh, line)) {
+
+    bool eof = false;
+
+    while (std::getline(fh, line) and !eof) {
+
       auto tokens = split(line, ',');
-      eventLOBSTER = {std::stof(tokens[0]), tokens[1][0], std::stoul(tokens[2]),
-		      std::stoul(tokens[3]), std::stof(tokens[4]), tokens[5][0]};
+      
+      if (tokens.size() == 6) {
+	float time = std::stof(tokens[0]);
+	short eventType = std::stoi(tokens[1]);
+	unsigned long orderId = std::stoul(tokens[2]);
+	unsigned int size = static_cast<unsigned int>(std::stoul(tokens[3]));
+	long price = std::stol(tokens[4]);
+	char direction = tokens[5] == "1" ? 'B' : 'S';
+	
+	Message::eventLOBSTER e = {time, eventType, orderId, size, price, direction};
+	res.push_back(e);
+      }
+      
     }
+
+    return res;
+
   }
 
-  std::vector<event> readDataDefault(const boost::filesystem::path& path) {
+  std::vector<Message::event> readDataDefault(const boost::filesystem::path& path) {
 
     /*
       struct event {
@@ -154,14 +234,14 @@ namespace Utils {
     
     const double MULT = 1000.;
     
-    std::vector<event> res;
+    std::vector<Message::event> res;
 
     std::string line;
     std::ifstream fh{path.string()};
     while (std::getline(fh, line)) {
       auto tokens = split(line, ',');
-      event e = {std::stoul(tokens[0]), tokens[1][0], tokens[2][0], 
-		 std::stoi(tokens(3)), static_cast<long>(std::stod(tokens[4])*MULT),
+      Message::event e = {std::stoul(tokens[0]), tokens[1][0], tokens[2][0], 
+		 std::stoi(tokens[3]), static_cast<long>(std::stod(tokens[4])*MULT),
 		 std::stoul(tokens[5])};
       res.push_back(e);
     }
@@ -173,15 +253,15 @@ namespace Utils {
 
 namespace std {
   template<>
-  struct less<Utils::order> {
-    bool operator()(const Utils::order& a, const Utils::order& b) const {
+  struct less<Message::order> {
+    bool operator()(const Message::order& a, const Message::order& b) const {
       return a.price_ < b.price_;
     };
   };
 
   template<>
-  struct greater<Utils::order> {
-    bool operator()(const Utils::order& a, const Utils::order& b) const {
+  struct greater<Message::order> {
+    bool operator()(const Message::order& a, const Message::order& b) const {
       return a.price_ > b.price_;
     }
   };

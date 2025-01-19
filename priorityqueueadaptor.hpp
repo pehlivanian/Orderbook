@@ -9,6 +9,7 @@
 #include "utils.hpp"
 
 using namespace Utils;
+using namespace Message;
 
 
 template<class T, class Compare=std::less<typename std::vector<T>::value_type>>
@@ -61,15 +62,16 @@ private:
   Compare comparer_;
 };
 
-template<class Compare>
+template<class Compare, int N>
 class PriorityQueueAdaptor {
 public:
   PriorityQueueAdaptor() : book_{{}} {}
   
 private:
-  void insert_(const order&, int);
-  void remove_(const order&, int);
-  void update_(const order&, int);
+  void insert_(const order&);
+  void remove_(const order&);
+  void update_(const order&);
+  void execute_(const order&);
 
   priority_queue<order, Compare> book_;
 };

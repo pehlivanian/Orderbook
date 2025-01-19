@@ -7,7 +7,14 @@
 #include "orderbook.hpp"
 
 #include "utils.hpp"
+#include "eventiterator.hpp"
+
+#include <iterator>
+#include <fstream>
+#include <sstream>
+#include <vector>
 
 using namespace Utils;
+using namespace Message;
 
 #endif

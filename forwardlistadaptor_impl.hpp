@@ -4,6 +4,37 @@
 template<typename Compare, int N>
 void
 ForwardListAdaptor<Compare, N>::init_() {
+  ;
+}
+
+template<typename Compare, int N>
+void
+ForwardListAdaptor<Compare, N>::insert_(const order& o) {
+  ;
+}
+
+template<typename Compare, int N>
+void
+ForwardListAdaptor<Compare, N>::remove_(const order& o) {
+  ;
+}
+
+template<typename Compare, int N>
+void
+ForwardListAdaptor<Compare, N>::update_(const order& o) {
+  ;
+}
+
+template<typename Compare, int N>
+void
+ForwardListAdaptor<Compare, N>::execute_(const order& o) {
+  ;
+}
+
+/*
+template<typename Compare, int N>
+void
+ForwardListAdaptor<Compare, N>::init_() {
   order nullOrder = order{0, 0, 0};
   for (int i=0; i<N; ++i) {
     book_.push_front(nullOrder);
@@ -54,5 +85,5 @@ ForwardListAdaptor<Compare, N>::update_(const order& o, int l) {
 
   return;
 }
-
+*/
 #endif
