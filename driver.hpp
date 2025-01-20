@@ -7,7 +7,7 @@
 #include "orderbook.hpp"
 
 #include "utils.hpp"
-#include "eventiterator.hpp"
+#include "eventstream.hpp"
 
 #include <iterator>
 #include <fstream>

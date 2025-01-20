@@ -1,5 +1,5 @@
-#ifndef __EVENTITERATOR_HPP__
-#define __EVENTITERATOR_HPP__
+#ifndef __EVENTSTREAM_HPP__
+#define __EVENTSTREAM_HPP__
 
 #include "utils.hpp"
 

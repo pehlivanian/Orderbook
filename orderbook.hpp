@@ -10,10 +10,12 @@
 #include <fstream>
 #include <fstream>
 #include <regex>
+#include <ranges>
 
 #include <boost/filesystem.hpp>
 
 #include "utils.hpp"
+#include "eventstream.hpp"
 
 using namespace Message;
 using namespace Utils;
