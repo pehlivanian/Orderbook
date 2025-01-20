@@ -14,6 +14,7 @@
 
 #include <boost/filesystem.hpp>
 
+#include "concurrentqueue.h"
 #include "utils.hpp"
 #include "eventstream.hpp"
 
@@ -99,10 +100,10 @@ class OrderBook {
 public:
 
   // const std::string input_file = "input.dat";
-  const std::string input_file = "GOOG_2012-06-21_34200000_57600000_message_1.csv";
+  // const std::string input_file = "GOOG_2012-06-21_34200000_57600000_message_1.csv";
 
   OrderBook();
-  void replay();
+  void replay(std::string);
   
 private:
 

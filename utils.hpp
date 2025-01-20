@@ -59,6 +59,10 @@ struct eventLOBSTER {
 
 namespace Utils {
 
+  Message::order eventLOBSTERToOrder(const Message::eventLOBSTER& e) {
+    return Message::order{e.direction_, e.time_, e.orderId_, e.price_, e.size_};
+  }
+
   void ltrim(std::string& s) {
     s.erase(s.begin(), std::find_if(s.begin(), s.end(),
 				    [](unsigned char c){
@@ -118,6 +122,8 @@ namespace Utils {
   std::ostream& operator<<(std::ostream& os, const Message::order& o) {
     os << "{ "
        << o.seqNum_ << ", "
+       << o.time_   << ", "
+       << o.side_   << ", "
        << o.price_  << ", "
        << o.size_   << "}";
     return os;

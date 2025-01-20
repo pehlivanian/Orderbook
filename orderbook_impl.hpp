@@ -28,7 +28,7 @@ OrderBook<BidContainer, AskContainer>::OrderBook() {
 
 template<typename BidContainer, typename AskContainer>
 void
-OrderBook<BidContainer, AskContainer>::replay() {
+OrderBook<BidContainer, AskContainer>::replay(std::string input_file) {
 
   namespace ranges = std::ranges;
   namespace views = std::views;
@@ -40,6 +40,7 @@ OrderBook<BidContainer, AskContainer>::replay() {
 
   for (auto e : eventstream)
     std::cout << e << std::endl;
+
 }
 
 #endif

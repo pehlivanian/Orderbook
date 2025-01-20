@@ -29,6 +29,7 @@ endif()
 find_package(Boost COMPONENTS filesystem)
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+include_directories(include)
 
 # object files
 add_library(forwardlistadaptor OBJECT forwardlistadaptor.cpp)
@@ -39,7 +40,7 @@ add_library(orderbook OBJECT orderbook.cpp)
 add_executable(driver driver.cpp)
 target_compile_definitions(driver PUBLIC -DCXX_FILESYSTEM_HEADER=<boost/filesystem.hpp>)
 target_compile_definitions(driver PUBLIC -DCXX_FILESYSTEM_NAMESPACE=boost::filesystem)
-target_link_libraries(driver PUBLIC Boost::filesystem)
+target_link_libraries(driver PUBLIC Boost::filesystem pthread)
 
 
 
