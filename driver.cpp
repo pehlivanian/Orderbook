@@ -20,6 +20,5 @@ auto main(int argc, char **argv) -> int {
   publisher->publish();
   consumer->consume();
 
-
   return 0;
 }

@@ -22,6 +22,8 @@ struct eventiterator {
   using pointer = eventLOBSTER*;
   using reference = eventLOBSTER&;
 
+  static int seqNum_;
+
   eventiterator() noexcept {}
 
   explicit eventiterator(const std::istreambuf_iterator<char>& rhs) noexcept :
@@ -31,12 +33,7 @@ struct eventiterator {
   eventiterator(const char* buf) :
     iss{buf},
     it{iss}
-  {
-    // std::cout << "TEST\n";
-    // std::cout << *it << std::endl;
-    // ++it;
-    // std::cout << *it << std::endl;
-  }
+  {}
 
   eventiterator(eventiterator&& rhs) {
     iss = std::move(rhs.iss);
@@ -89,9 +86,14 @@ struct eventiterator {
     //     };
 
 
+    // We assume there is one EventStream object
+    // as we place seqNum sequentially on each event 
+    // read.
+
     std::string line;
     
     eventLOBSTER e{};
+    e.seqNum_ = ++seqNum_;
 
     int fieldNum = 0;
     
@@ -154,5 +156,6 @@ private:
   eventiterator end_;
 };
 
+int eventiterator::seqNum_ = 0;
 
 #endif

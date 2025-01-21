@@ -47,6 +47,7 @@ struct event {
 };
 
 struct eventLOBSTER {
+  unsigned long seqNum_;
   double time_;
   short eventType_;
   unsigned long orderId_;
@@ -142,7 +143,9 @@ namespace Utils {
 
   std::ostream& operator<<(std::ostream& os, const Message::eventLOBSTER& e) {
     os << "{"
-       << std::setprecision(14) << e.time_ << ", "
+       << std::setprecision(14) 
+       << e.seqNum_ << ", "
+       << e.time_ << ", "
        << e.eventType_ << ", "
        << e.orderId_ << ", "
        << e.size_ << ", "
@@ -187,6 +190,7 @@ namespace Utils {
     
     /*
       struct eventLOBSTER {
+      unsigned long seqNum_;
       float time_;
       short eventType_;
       unsigned long orderId_;
@@ -202,6 +206,7 @@ namespace Utils {
     std::ifstream fh{path.string()};
 
     bool eof = false;
+    unsigned long seqNum = 0;
 
     while (std::getline(fh, line) and !eof) {
 
@@ -215,7 +220,7 @@ namespace Utils {
 	long price = std::stol(tokens[4]);
 	char direction = tokens[5] == "1" ? 'B' : 'S';
 	
-	Message::eventLOBSTER e = {time, eventType, orderId, size, price, direction};
+	Message::eventLOBSTER e = {++seqNum, time, eventType, orderId, size, price, direction};
 	res.push_back(e);
       }
       

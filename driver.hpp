@@ -15,6 +15,7 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <thread>
 
 using namespace Utils;
 using namespace Message;
