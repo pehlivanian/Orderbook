@@ -77,6 +77,7 @@ struct eventiterator {
     // Fill out this struct
     //
     //     struct eventLOBSTER {
+    //       usigned long seqNum_;
     //       double time_;
     //       short eventType_;
     //       unsigned long orderId_;
@@ -120,6 +121,7 @@ struct eventiterator {
 	e.price_ = std::stol(line);
 	break;
       case(5):
+	bool isBuy = (line == "1");
 	e.direction_ = line == "1" ? 'B' : 'S';
 	break;
       }
@@ -156,6 +158,6 @@ private:
   eventiterator end_;
 };
 
-int eventiterator::seqNum_ = 0;
+int eventiterator::seqNum_ = -1;
 
 #endif

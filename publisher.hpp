@@ -7,29 +7,11 @@
 #include <string>
 #include <memory>
 #include <future>
+#include <atomic>
+#include <array>
+#include <utility>
+#include <mutex>
 
-template<typename T, typename EventType>
-class ActivatedQueue {
-public:
-  
-  using SPMCq = moodycamel::ConcurrentQueue<EventType>;
-
-  ActivatedQueue(SPMCq& q) :
-    q_{q}
-  {}
-
-  void enqueue(const EventType& e) {
-    q_->enqueue(e);
-  }
-
-  bool try_dequeue() {
-    return q_->try_dequeue();
-  }
-  
-private:
-
-  std::unique_ptr<SPMCq> q_;
-};
 
 template<typename EventType>
 class Publisher {
@@ -54,7 +36,7 @@ public:
       SPMCqueue_->enqueue(e);
     }
   }
-
+  
   std::shared_ptr<SPMCq> get_queue() const { return SPMCqueue_; }
 
 private:

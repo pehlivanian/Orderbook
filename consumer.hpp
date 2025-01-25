@@ -3,30 +3,116 @@
 
 #include "eventstream.hpp"
 #include "concurrentqueue.h"
+#include "publisher.hpp"
 #include "utils.hpp"
 
 using namespace Utils;
 using namespace Message;
 
+#include <iostream>
 #include <memory>
 #include <syncstream>
 #include <thread>
-
+#include <array>
+#include <atomic>
+#include <mutex>
+#include <chrono>
 
 #define sync_cout std::osyncstream(std::cout)
 
-template<typename EventType>
+using namespace std::chrono_literals;
+
+template<typename OrderType>
+class ActivatedQueue {
+public:
+  ActivatedQueue() :
+    nextSeqNum_{-1}
+  {
+    for (auto& el : statusBit_) {
+      el.clear();
+    }
+  }
+
+  void enqueue(OrderType& el) {
+    std::cout << "ENQUEUED: " << el.seqNum_ << " : " << el << std::endl;
+    cargo_[el.seqNum_] = el;
+    statusBit_[el.seqNum_].test_and_set();
+  }
+
+  bool try_dequeue(OrderType& el) {
+    if (statusBit_[nextSeqNum_ + 1].test()) {
+      std::lock_guard<std::mutex> lock(mut_);
+      el = std::move(cargo_[nextSeqNum_ + 1]);
+      statusBit_[nextSeqNum_ + 1].clear();
+      nextSeqNum_++;
+
+    }
+  }
+
+private:
+  
+  int nextSeqNum_;
+  std::array<std::atomic_flag, 1 << 24> statusBit_;
+  std::array<OrderType, 1 << 24> cargo_;
+
+  mutable std::mutex mut_;  
+
+};
+
+template<typename OrderType>
+class ActivatedQueue2 {
+public:
+  
+  ActivatedQueue2() :
+    nextSeqNum_{-1}
+  {
+    for (auto& el : statusBit_) {
+      el.clear();
+    }
+  }
+
+  void enqueue(OrderType& el) {
+    std::cout << "ENQUEUED: " << el.seqNum_ << " : " << el << std::endl;
+    cargo_[el.seqNum_] = el;
+    statusBit_[el.seqNum_].test_and_set();
+  }
+
+  bool try_dequeue(OrderType& el) {
+    if (statusBit_[nextSeqNum_ + 1].test()) {
+
+      std::lock_guard<std::mutex> lock(mut_);
+      el = std::move(cargo_[nextSeqNum_ + 1]);
+      statusBit_[nextSeqNum_ + 1].clear();
+      nextSeqNum_++;
+
+    }
+  }
+
+private:
+  
+  int nextSeqNum_;
+  std::array<std::atomic_flag, 1 << 12> statusBit_;
+  std::array<OrderType, 1 << 12> cargo_;
+
+  mutable std::mutex mut_;
+};
+
+template<typename EventType, typename OrderType>
 class Consumer {
 
-  using SPMCq = moodycamel::ConcurrentQueue<EventType>;
+  using SPMCInnerQ = moodycamel::ConcurrentQueue<EventType>;
+  using MPMCq = ActivatedQueue<OrderType>;
 
   const int num_workers = std::thread::hardware_concurrency() - 1;
 
   struct worker {
     
-    Consumer<EventType>* outer_;
+    // the worker will take the event from the SPMC queue
+    // and publish to the MPMC queue
 
-    worker(Consumer<EventType>* outer, int id) : 
+    Consumer<EventType, OrderType>* outer_;
+
+    worker(Consumer<EventType, OrderType>* outer, int id) : 
       outer_{outer},
       id_{id}
     {}
@@ -37,7 +123,8 @@ class Consumer {
 	bool found = outer_->SPMCqueue_source_->try_dequeue(e);
 	if (found) {
 	  std::cout << "ID: " << id_ << " : " << e << std::endl;
-	  order o = eventLOBSTERToOrder(e);
+	  auto o = eventLOBSTERToOrder(e);
+	  outer_->MPMCqueue_target_->enqueue(o);
 	}
       }
     }
@@ -47,9 +134,9 @@ class Consumer {
   };
 
 public:
-  Consumer(std::shared_ptr<SPMCq> q_source, std::shared_ptr<SPMCq> q_target) :
+  Consumer(std::shared_ptr<SPMCInnerQ> q_source, std::shared_ptr<MPMCq> q_target) :
     SPMCqueue_source_{q_source},
-    SPMCqueue_target_{q_target}
+    MPMCqueue_target_{q_target}
   {}
 					
   void consume() {
@@ -79,8 +166,8 @@ public:
 
 
 private:
-  std::shared_ptr<SPMCq> SPMCqueue_source_;
-  std::shared_ptr<SPMCq> SPMCqueue_target_;
+  std::shared_ptr<SPMCInnerQ> SPMCqueue_source_;
+  std::shared_ptr<MPMCq> MPMCqueue_target_;
 };
 
 #endif

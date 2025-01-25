@@ -26,9 +26,10 @@
 namespace Message {
 
 struct order {   
+  unsigned long seqNum_;
   char side_;
   double time_;
-  unsigned long seqNum_;
+  unsigned long orderId_;
   long price_;
   unsigned long size_;
   
@@ -61,7 +62,7 @@ struct eventLOBSTER {
 namespace Utils {
 
   Message::order eventLOBSTERToOrder(const Message::eventLOBSTER& e) {
-    return Message::order{e.direction_, e.time_, e.orderId_, e.price_, e.size_};
+    return Message::order{e.seqNum_, e.direction_, e.time_, e.orderId_, e.price_, e.size_};
   }
 
   void ltrim(std::string& s) {
@@ -168,7 +169,7 @@ namespace Utils {
   std::size_t fileSize(const std::string& fn) {
     std::ifstream ifs{fn, std::ifstream::binary};
     std::filebuf* pbuf = ifs.rdbuf();
-    std::size_t size = pbuf->pubseekoff(0, ifs.end, ifs.in);;
+    std::size_t size = pbuf->pubseekoff(0, ifs.end, ifs.in);
     return size;
   }
 
