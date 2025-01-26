@@ -84,9 +84,9 @@ public:
   void enqueue(OrderType& el) {
     // sync_cout << "QUEUE 2: ENQUEUED: " << el.seqNum_ << std::endl;
     // std::cout << "ENQUEUED: " << el.seqNum_ << " : " << el << std::endl;
-    cargo_[el.seqNum_] = el;
-    statusBit_[el.seqNum_].store(true);
-    // sync_cout << "STATUS BIT SET ON QUEUE2" << std::endl;
+    cargo_[el.seqNum_] = std::move(el);
+    statusBit_[el.seqNum_].store(true, std::memory_order_release);
+    // sync_cout << "STATUS BIT SET ON QUEUE2" << std::endl;9
   }
 
   bool try_dequeue(OrderType& el) {
@@ -146,10 +146,11 @@ class Consumer {
 	  // std::cout << "ID: " << id_ << " : " << e << std::endl;
 	  // sync_cout << "QUEUE 1 DEQUEUED: " << e.seqNum_ << std::endl;
 	  auto o = eventLOBSTERToOrder(e);
+	  std::this_thread::sleep_for(100ms);
 	  outer_->MPMCqueue_target_->enqueue(o);
 	  // sync_cout << "QUEUE 2: ENQUEUED: " << e.seqNum_ << std::endl;
 	} else {
-	  // sync_cout << "FAILED TO DEQUEU FROM QUEUE 1" << std::endl;
+	  // sync_cout << "FAILED TO DEQUEUE FROM QUEUE 1" << std::endl;
 	}
       }
     }

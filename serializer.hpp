@@ -80,7 +80,7 @@ public:
       // sync_cout << "ATTEMPTING TO DEQUEUE FROM QUEUE 2" << std::endl;
       bool found = Serializer_q_->try_dequeue(o);
       if (found) {
-	// sync_cout << "QUEUE 2: DEQUEUED: " << o.seqNum_ << std::endl;
+	sync_cout << "QUEUE 2: DEQUEUED: " << o.seqNum_ << std::endl;
 	count++;
       } else {
 	// sync_cout << "ATTEMPT TO DEQUE FROM QUEUE 2 FAILED" << std::endl;

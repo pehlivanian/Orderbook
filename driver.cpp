@@ -38,7 +38,7 @@ auto main(int argc, char **argv) -> int {
     ser_thread.join();
   } else {
     
-    constexpr std::size_t num = 4;
+    constexpr std::size_t num = 49482;
 
     publisher->publish_some(num);
     consumer->consume_some(num);
