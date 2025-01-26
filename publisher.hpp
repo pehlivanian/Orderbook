@@ -11,7 +11,13 @@
 #include <array>
 #include <utility>
 #include <mutex>
+#include <iostream>
+#include <syncstream>
+#include <thread>
 
+#define sync_cout std::osyncstream(std::cout)
+
+using namespace std::chrono_literals;
 
 template<typename EventType>
 class Publisher {
@@ -33,7 +39,21 @@ public:
   {}
   void publish() { 
     for (auto const& e : eventstream_) {
+      // sync_cout << "ATTEMPTING TO ENQUEUE TO QUEUE 1" << std::endl;
       SPMCqueue_->enqueue(e);
+      // sync_cout << "QUEUE 1: ENQUEUED: " << e.seqNum_ << std::endl;
+    }
+  }
+
+  void publish_some(std::size_t num) {
+    std::size_t count = 0;
+    for (auto const& e : eventstream_) {
+      // sync_cout << "ATTEMPTING TO ENQUEUE TO QUEUE1" << std::endl;
+      SPMCqueue_->enqueue(e);
+      // sync_cout << "QUEUE1: ENQUEUED: " << e.seqNum_ << std::endl;
+      count++;
+      if (count >= num)
+	return;
     }
   }
   

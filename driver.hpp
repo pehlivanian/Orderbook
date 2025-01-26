@@ -10,8 +10,10 @@
 #include "eventstream.hpp"
 #include "publisher.hpp"
 #include "consumer.hpp"
+#include "serializer.hpp"
 
 #include <iterator>
+#include <memory>
 #include <fstream>
 #include <sstream>
 #include <vector>

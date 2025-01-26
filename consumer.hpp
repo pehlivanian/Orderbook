@@ -22,79 +22,98 @@ using namespace Message;
 
 using namespace std::chrono_literals;
 
-template<typename OrderType>
-class ActivatedQueue {
+
+class AtomicIndex {
+  std::atomic<unsigned long> c_;
+
 public:
-  ActivatedQueue() :
-    nextSeqNum_{-1}
-  {
-    for (auto& el : statusBit_) {
-      el.clear();
-    }
+
+  AtomicIndex() : c_{0} {}
+
+  unsigned long incr() noexcept {
+    return 1 + c_.fetch_add(1, std::memory_order_release);
   }
 
-  void enqueue(OrderType& el) {
-    std::cout << "ENQUEUED: " << el.seqNum_ << " : " << el << std::endl;
-    cargo_[el.seqNum_] = el;
-    statusBit_[el.seqNum_].test_and_set();
+  unsigned long get() const noexcept {
+    return c_.load(std::memory_order_acquire);
   }
 
-  bool try_dequeue(OrderType& el) {
-    if (statusBit_[nextSeqNum_ + 1].test()) {
-      std::lock_guard<std::mutex> lock(mut_);
-      el = std::move(cargo_[nextSeqNum_ + 1]);
-      statusBit_[nextSeqNum_ + 1].clear();
-      nextSeqNum_++;
+};
 
-    }
+template<typename T>
+class Spinlock {
+public:
+  explicit Spinlock(T* p) :
+    p_{p}
+  {}
+
+  Spinlock(Spinlock<T>&& rhs) {
+    p_.exchange(rhs.p_, std::memory_order_seq_cst);
+    saved_p_ = nullptr;
+  }
+  Spinlock(const Spinlock<T>&) = delete;
+  Spinlock operator=(const Spinlock<T>&) = delete;
+  
+
+  T* lock() {
+    while (!(saved_p_ = p_.exchange(nullptr, std::memory_order_acquire))) {}
+    return p_.load();
+  }
+  
+  void unlock() {
+    p_.store(saved_p_ , std::memory_order_release); 
   }
 
 private:
-  
-  int nextSeqNum_;
-  std::array<std::atomic_flag, 1 << 24> statusBit_;
-  std::array<OrderType, 1 << 24> cargo_;
-
-  mutable std::mutex mut_;  
+  std::atomic<T*> p_;
+  T* saved_p_ = nullptr;
 
 };
 
 template<typename OrderType>
-class ActivatedQueue2 {
+class ActivatedQueue {
 public:
-  
-  ActivatedQueue2() :
-    nextSeqNum_{-1}
+  ActivatedQueue() :
+    seqNum_{AtomicIndex{}}
   {
     for (auto& el : statusBit_) {
-      el.clear();
+      el.store(false);
     }
   }
 
   void enqueue(OrderType& el) {
-    std::cout << "ENQUEUED: " << el.seqNum_ << " : " << el << std::endl;
+    // sync_cout << "QUEUE 2: ENQUEUED: " << el.seqNum_ << std::endl;
+    // std::cout << "ENQUEUED: " << el.seqNum_ << " : " << el << std::endl;
     cargo_[el.seqNum_] = el;
-    statusBit_[el.seqNum_].test_and_set();
+    statusBit_[el.seqNum_].store(true);
+    // sync_cout << "STATUS BIT SET ON QUEUE2" << std::endl;
   }
 
   bool try_dequeue(OrderType& el) {
-    if (statusBit_[nextSeqNum_ + 1].test()) {
+    
+    // sync_cout << "ATTEMPTING TO DEQUEUE FROM QUEUE 2 (IN TRY_DEQUEUE): " << seqNum_.get() << std::endl;
+    if (statusBit_[seqNum_.get()].load()) {
+      el = std::move(cargo_[seqNum_.get()]);
+      // sync_cout << "QUEUE 2: DEQUEUED: " << el.seqNum_ << std::endl;
+      statusBit_[seqNum_.get()].store(false);
+      // sync_cout << "QUEUE2: SET STATUS BIT: " << el.seqNum_ << std::endl;
+      seqNum_.incr();
 
-      std::lock_guard<std::mutex> lock(mut_);
-      el = std::move(cargo_[nextSeqNum_ + 1]);
-      statusBit_[nextSeqNum_ + 1].clear();
-      nextSeqNum_++;
-
+      return true;
     }
+    else {
+      // sync_cout << "ATTEMPT TO DEQUEUE FROM QUEUE 2 FAILED (IN TRY_DEQUEUE)" << std::endl;
+      return false;
+    }
+
   }
 
 private:
   
-  int nextSeqNum_;
-  std::array<std::atomic_flag, 1 << 12> statusBit_;
-  std::array<OrderType, 1 << 12> cargo_;
+  AtomicIndex seqNum_;
+  std::array<std::atomic<bool>, 50000> statusBit_;
+  std::array<OrderType, 50000> cargo_;
 
-  mutable std::mutex mut_;
 };
 
 template<typename EventType, typename OrderType>
@@ -103,7 +122,8 @@ class Consumer {
   using SPMCInnerQ = moodycamel::ConcurrentQueue<EventType>;
   using MPMCq = ActivatedQueue<OrderType>;
 
-  const int num_workers = std::thread::hardware_concurrency() - 1;
+  // const int num_workers = std::thread::hardware_concurrency() - 1;
+  const int num_workers = 4;
 
   struct worker {
     
@@ -118,13 +138,18 @@ class Consumer {
     {}
 
     void operator()() {
-      eventLOBSTER e;
       while (true) {
+	EventType e;
+	// sync_cout << "ATTEMPTING TO DEQUE FROM QUEUE 1" << std::endl;
 	bool found = outer_->SPMCqueue_source_->try_dequeue(e);
 	if (found) {
-	  std::cout << "ID: " << id_ << " : " << e << std::endl;
+	  // std::cout << "ID: " << id_ << " : " << e << std::endl;
+	  // sync_cout << "QUEUE 1 DEQUEUED: " << e.seqNum_ << std::endl;
 	  auto o = eventLOBSTERToOrder(e);
 	  outer_->MPMCqueue_target_->enqueue(o);
+	  // sync_cout << "QUEUE 2: ENQUEUED: " << e.seqNum_ << std::endl;
+	} else {
+	  // sync_cout << "FAILED TO DEQUEU FROM QUEUE 1" << std::endl;
 	}
       }
     }
@@ -159,8 +184,26 @@ public:
       threads.emplace_back(tasks[i]);
     }
 
-    for (std::size_t i=0; i<threads.size(); ++i) {
-      threads[i].join();
+    for (auto& thread : threads)
+      thread.join();
+
+  }
+
+  void consume_some(std::size_t num) {
+    std::size_t count = 0;
+    while(count < num) {
+      EventType e;
+      // sync_cout << "ATTEMPTING TO DEQUEUE FROM QUEUE 1" << std::endl;
+      bool found = SPMCqueue_source_->try_dequeue(e);
+      if (found) {
+	// sync_cout << "QUEUE 1 DEQUEUED: " << e.seqNum_ << std::endl;
+	auto o = eventLOBSTERToOrder(e);
+	MPMCqueue_target_->enqueue(o);
+	// sync_cout << "QUEUE 2: ENQUEUED: " << e.seqNum_ << std::endl;
+	count++;
+      } else {
+	// sync_cout << "FAILED TO DEQUEUE FROM QUEUE 1"<< std::endl;
+      }
     }
   }
 
