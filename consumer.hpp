@@ -14,6 +14,8 @@ using namespace Message;
 #include <syncstream>
 #include <thread>
 #include <array>
+#include <vector>
+#include <optional>
 #include <atomic>
 #include <mutex>
 #include <chrono>
@@ -21,6 +23,53 @@ using namespace Message;
 #define sync_cout std::osyncstream(std::cout)
 
 using namespace std::chrono_literals;
+
+
+template<typename EventType, std::size_t BufferPower = 20>
+class LockFreeOrderedMessageQueue {
+public:
+
+  LockFreeOrderedMessageQueue() : 
+    buffer_{BUFFER_SIZE}
+  {}
+
+  bool enqueue(EventType&& e) {
+    unsigned long sequenceNumber = e.seqNum_;
+    std::size_t currentPublish = publishIndex_.load(std::memory_order_relaxed);
+    std::size_t nextPublish = (currentPublish + 1) & mask_;
+
+    // Check that buffer is full; we ignore for the time being and overwrite
+    // if (nextPublish == consumeIndex.load(std::memory_order_acquire)) {
+    //   return false;
+    // }
+
+    // Try to publish message
+    EventType& slot = buffer_[currentPublish];
+    int expected = -1;
+    if (slot.seqNum_.compare_exchange_strong(expected, sequenceNumber,
+					     std::memory_order_release, std::memory_order_relaxed)) {
+      slot = std::move(e);
+      publishIndex_.store(nextPublish, std::memory_order_release);
+      return true;
+    }
+    
+    return false;
+  }
+
+  std::optional<std::pair<int, std::string>> consume() {
+    
+  }
+
+private:
+
+  static constexpr std::size_t BUFFER_SIZE = 1ULL << BufferPower;
+  static constexpr std::size_t mask_ = BUFFER_SIZE - 1;
+
+  std::vector<EventType> buffer_;
+  std::atomic<std::size_t> publishIndex_{0};
+  std::atomic<std::size_t> consumeIndex_{0};
+  std::atomic<int> expectedSequenceNumber_{0};
+};
 
 
 class AtomicIndex {

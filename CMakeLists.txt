@@ -27,6 +27,7 @@ if (NOT CMAKE_BUILD_TYPE)
 endif()
 
 find_package(Boost COMPONENTS filesystem)
+find_package(GTest REQUIRED)
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(include)
@@ -41,6 +42,16 @@ add_executable(driver driver.cpp)
 target_compile_definitions(driver PUBLIC -DCXX_FILESYSTEM_HEADER=<boost/filesystem.hpp>)
 target_compile_definitions(driver PUBLIC -DCXX_FILESYSTEM_NAMESPACE=boost::filesystem)
 target_link_libraries(driver PUBLIC Boost::filesystem pthread)
+
+add_executable(orderedqueue_driver orderedqueue_driver.cpp)
+
+#######
+# TESTS
+#######
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_executable(tests tests.cpp)
+target_link_libraries(tests ${GTEST_LIBRARIES} pthread)
+
 
 
 
