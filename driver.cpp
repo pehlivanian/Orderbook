@@ -19,10 +19,10 @@ auto main(int argc, char **argv) -> int {
   using EventType = eventLOBSTER;
   using OrderType = order;
   using SPMCq = moodycamel::ConcurrentQueue<EventType>;
-  using ActivatedMPMCq = ActivatedQueue<OrderType>;
+  using OrderedMPMCq = OrderedMPMCQueue<OrderType>;
 
   std::shared_ptr<SPMCq> q_source = std::make_shared<SPMCq>();
-  std::shared_ptr<ActivatedMPMCq> q_target = std::make_shared<ActivatedMPMCq>();
+  std::shared_ptr<OrderedMPMCQueue<OrderType>> q_target = std::make_shared<OrderedMPMCQueue<OrderType>>();
 
   auto publisher = std::make_unique<Publisher<EventType>>(input_file, q_source);
   auto consumer = std::make_unique<Consumer<EventType, OrderType>>(q_source, q_target);
@@ -38,7 +38,7 @@ auto main(int argc, char **argv) -> int {
     ser_thread.join();
   } else {
     
-    constexpr std::size_t num = 49482;
+    constexpr std::size_t num = 100;
 
     publisher->publish_some(num);
     consumer->consume_some(num);

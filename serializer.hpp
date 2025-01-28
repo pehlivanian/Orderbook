@@ -1,9 +1,12 @@
 #ifndef __SERIALIZER_HPP__
 #define __SERIALIZER_HPP__
 
+#include "orderedqueue.hpp"
+
 #include <iostream>
 #include <syncstream>
 #include <thread>
+#include <queue>
 
 #define sync_cout std::osyncstream(std::cout)
 
@@ -11,9 +14,8 @@ template<typename OrderType>
 class Serializer {
 public:
 
-  using ActivatedMPMCq = std::shared_ptr<ActivatedQueue<OrderType>>;
   // const int num_workers = std::thread::hardware_concurrency() - 1;
-  const int num_workers = 4;
+  const int num_workers = 1;
 
   struct worker {
     
@@ -31,7 +33,7 @@ public:
 	bool found = outer_->Serializer_q_->try_dequeue(o);
 	if (found) {
 	  // std::cout << "ID: " << id_ << " : " << o << std::endl;
-	  sync_cout << "QUEUE 2: DEQUEUED: " << o.seqNum_ << std::endl;
+	  // sync_cout << "QUEUE 2: DEQUEUED: " << o.seqNum_ << std::endl;
 	}
 	else {
 	  // sync_cout << "ATTEMPT TO DEQUE FROM QUEUE 2 FAILED" << std::endl;
@@ -43,7 +45,7 @@ public:
 
   };
 
-  Serializer(ActivatedMPMCq& q) :
+  Serializer(std::shared_ptr<OrderedMPMCQueue<OrderType>> q) :
     Serializer_q_{q}
   {}
 
@@ -83,13 +85,13 @@ public:
 	sync_cout << "QUEUE 2: DEQUEUED: " << o.seqNum_ << std::endl;
 	count++;
       } else {
-	// sync_cout << "ATTEMPT TO DEQUE FROM QUEUE 2 FAILED" << std::endl;
+	sync_cout << "ATTEMPT TO DEQUE FROM QUEUE 2 FAILED" << std::endl;
       }
     }
   }
 
 private:
-  std::shared_ptr<ActivatedQueue<OrderType>> Serializer_q_;
+  std::shared_ptr<OrderedMPMCQueue<OrderType>> Serializer_q_;
 };
 
 #endif

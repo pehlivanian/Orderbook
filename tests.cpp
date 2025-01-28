@@ -14,14 +14,14 @@
 using namespace std::chrono_literals;
 
 struct TestEvent {
-  unsigned long seqNumber_;
+  unsigned long seqNum_;
   int data_;
   std::string metadata_;
 
-  TestEvent(unsigned long seq, int data) : seqNumber_(seq), data_(data) {}
+  TestEvent(unsigned long seq, int data) : seqNum_(seq), data_(data) {}
   TestEvent(unsigned long seq, int data, std::string metadata) : 
-    seqNumber_(seq), data_(data), metadata_(metadata) {}
-  TestEvent() : seqNumber_(0), data_(0), metadata_{} {}
+    seqNum_(seq), data_(data), metadata_(metadata) {}
+  TestEvent() : seqNum_(0), data_(0), metadata_{} {}
 };
 
 class OrderedMPMCQueueTest : public ::testing::Test {
@@ -35,7 +35,7 @@ TEST_F(OrderedMPMCQueueTest, BasicEnqueueDequeue) {
     ASSERT_TRUE(queue.try_enqueue(TestEvent(0, 42)));
     auto result = queue.try_dequeue();
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->seqNumber_, 0);
+    EXPECT_EQ(result->seqNum_, 0);
     EXPECT_EQ(result->data_, 42);
 }
 
@@ -66,7 +66,7 @@ TEST_F(OrderedMPMCQueueTest, OrderedConsumption) {
     for (int i = 0; i < 3; ++i) {
         auto result = queue.try_dequeue();
         ASSERT_TRUE(result.has_value());
-        EXPECT_EQ(result->seqNumber_, i);
+        EXPECT_EQ(result->seqNum_, i);
         EXPECT_EQ(result->data_, i);
     }
 }
@@ -94,7 +94,7 @@ TEST_F(OrderedMPMCQueueTest, MultiThreadedEnqueue) {
     for (size_t i = 0; i < NUM_THREADS * EVENTS_PER_THREAD; ++i) {
         auto result = queue.try_dequeue();
         ASSERT_TRUE(result.has_value());
-        EXPECT_EQ(result->seqNumber_, i);
+        EXPECT_EQ(result->seqNum_, i);
         EXPECT_EQ(result->data_, i);
     }
 }
@@ -125,7 +125,7 @@ TEST_F(OrderedMPMCQueueTest, RandomOrderEnqueue) {
     for (size_t i = 0; i < NUM_EVENTS; ++i) {
         auto result = queue.try_dequeue();
         ASSERT_TRUE(result.has_value());
-        EXPECT_EQ(result->seqNumber_, i);
+        EXPECT_EQ(result->seqNum_, i);
         EXPECT_EQ(result->data_, i);
     }
 }
@@ -147,7 +147,7 @@ TEST_F(OrderedMPMCQueueTest, MultipleConsumers) {
         consumers.emplace_back([&]() {
             while (total_consumed.load() < NUM_EVENTS) {
                 if (auto result = queue.try_dequeue()) {
-                    EXPECT_EQ(result->data_, result->seqNumber_);
+                    EXPECT_EQ(result->data_, result->seqNum_);
                     total_consumed.fetch_add(1);
                 }
             }
@@ -176,7 +176,7 @@ TEST_F(OrderedMPMCQueueTest, ConcurrentEnqueueDequeue) {
         consumers.emplace_back([&]() {
             while (total_consumed.load() < NUM_PRODUCERS * EVENTS_PER_PRODUCER) {
                 if (auto result = queue.try_dequeue()) {
-                    EXPECT_EQ(result->data_, result->seqNumber_);
+                    EXPECT_EQ(result->data_, result->seqNum_);
                     total_consumed.fetch_add(1);
                 }
             }
@@ -258,7 +258,7 @@ TEST_F(OrderedMPMCQueueTest, SequenceGaps) {
     // Should get first event only
     auto result = queue.try_dequeue();
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->seqNumber_, 0);
+    EXPECT_EQ(result->seqNum_, 0);
 
     // Shouldn't get more events yet
     result = queue.try_dequeue();
@@ -270,7 +270,7 @@ TEST_F(OrderedMPMCQueueTest, SequenceGaps) {
     // Now should get the next event
     result = queue.try_dequeue();
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->seqNumber_, 1);
+    EXPECT_EQ(result->seqNum_, 1);
 }
 
 // Test 2: Alternating Producer Consumer
@@ -306,7 +306,7 @@ TEST_F(OrderedMPMCQueueTest, AlternatingProducerConsumer) {
 
     ASSERT_EQ(received.size(), NUM_ROUNDS);
     for (size_t i = 0; i < received.size(); ++i) {
-        EXPECT_EQ(received[i].seqNumber_, i);
+        EXPECT_EQ(received[i].seqNum_, i);
     }
 }
 
@@ -324,7 +324,7 @@ TEST_F(OrderedMPMCQueueTest, RapidClearAndFill) {
         // Clear
         size_t count = 0;
         while (auto result = queue.try_dequeue()) {
-            EXPECT_EQ(result->seqNumber_, round * BATCH_SIZE + count);
+            EXPECT_EQ(result->seqNum_, round * BATCH_SIZE + count);
             count++;
         }
         EXPECT_EQ(count, BATCH_SIZE);
@@ -350,7 +350,7 @@ TEST_F(OrderedMPMCQueueTest, LateSequenceNumbers) {
     for (size_t i = 0; i < 10; ++i) {
         auto result = queue.try_dequeue();
         ASSERT_TRUE(result.has_value());
-        EXPECT_EQ(result->seqNumber_, i);
+        EXPECT_EQ(result->seqNum_, i);
     }
 }
 
@@ -445,7 +445,7 @@ TEST_F(OrderedMPMCQueueTest, QueueWraparound) {
     for (size_t i = 0; i < QUEUE_CAPACITY/2; ++i) {
         auto result = queue.try_dequeue();
         ASSERT_TRUE(result.has_value());
-        EXPECT_EQ(result->seqNumber_, i);
+        EXPECT_EQ(result->seqNum_, i);
     }
 
     // Add new elements (should wrap around internal buffer)
@@ -456,9 +456,9 @@ TEST_F(OrderedMPMCQueueTest, QueueWraparound) {
     // Verify all elements
     for (size_t i = QUEUE_CAPACITY/2; i < QUEUE_CAPACITY + QUEUE_CAPACITY/2; ++i) {
         auto result = queue.try_dequeue();
-	sync_cout << "result->seqNumber_: " << result->seqNumber_ << " i: " << i << std::endl;
+	// sync_cout << "result->seqNum_: " << result->seqNum_ << " i: " << i << std::endl;
         ASSERT_TRUE(result.has_value());
-        EXPECT_EQ(result->seqNumber_, i);
+        EXPECT_EQ(result->seqNum_, i);
     }
 }
 
@@ -480,7 +480,7 @@ TEST_F(OrderedMPMCQueueTest, MixedEventSizes) {
     for (size_t i = 0; i < 100; ++i) {
         auto result = queue.try_dequeue();
         ASSERT_TRUE(result.has_value());
-        EXPECT_EQ(result->seqNumber_, i);
+        EXPECT_EQ(result->seqNum_, i);
         if (i % 2 == 0) {
             EXPECT_EQ(result->metadata_, SMALL_STR);
         } else {
@@ -505,7 +505,7 @@ TEST_F(OrderedMPMCQueueTest, BulkOperations) {
     for (size_t i = 0; i < BULK_SIZE; ++i) {
         auto result = queue.try_dequeue();
         ASSERT_TRUE(result.has_value());
-        EXPECT_EQ(result->seqNumber_, i);
+        EXPECT_EQ(result->seqNum_, i);
     }
     auto dequeue_time = std::chrono::high_resolution_clock::now() - start;
 
@@ -533,7 +533,7 @@ TEST_F(OrderedMPMCQueueTest, VeryLargeSequenceJumps) {
     // Should only get the first event
     auto result = queue.try_dequeue();
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->seqNumber_, 0);
+    EXPECT_EQ(result->seqNum_, 0);
 
     // No more events should be available due to gaps
     result = queue.try_dequeue();
@@ -630,7 +630,7 @@ TEST_F(OrderedMPMCQueueTest, InterleavedEventSizes) {
     for (size_t i = 0; i < NUM_EVENTS; ++i) {
         auto result = queue.try_dequeue();
         ASSERT_TRUE(result.has_value());
-        EXPECT_EQ(result->seqNumber_, i);
+        EXPECT_EQ(result->seqNum_, i);
         if (i % 2 == 1) {
             EXPECT_EQ(result->metadata_.size(), 10000);
         }
@@ -663,7 +663,7 @@ TEST_F(OrderedMPMCQueueTest, RandomSequenceDistribution) {
     for (auto expected_seq : expected_sequences) {
         auto result = queue.try_dequeue();
         ASSERT_TRUE(result.has_value());
-        EXPECT_EQ(result->seqNumber_, expected_seq);
+        EXPECT_EQ(result->seqNum_, expected_seq);
     }
 }
 
@@ -709,7 +709,7 @@ TEST_F(OrderedMPMCQueueTest, QueueRecoveryAfterFull) {
     // Remove one item
     auto result = queue.try_dequeue();
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->seqNumber_, 0);
+    EXPECT_EQ(result->seqNum_, 0);
 
     // Should be able to enqueue again
     EXPECT_TRUE(queue.try_enqueue(TestEvent(QUEUE_CAPACITY, 0)));
@@ -733,7 +733,7 @@ TEST_F(OrderedMPMCQueueTest, MultipleConsumerRaceForLast) {
         consumers.emplace_back([&]() {
             if (auto result = queue.try_dequeue()) {
                 successful_dequeues++;
-                EXPECT_EQ(result->seqNumber_, 0);
+                EXPECT_EQ(result->seqNum_, 0);
                 EXPECT_EQ(result->data_, 42);
             }
         });
@@ -767,7 +767,7 @@ TEST_F(OrderedMPMCQueueTest, SparseSequenceDistribution) {
     // Verify events come out in sequence order
     size_t last_seq = 0;
     while (auto result = queue.try_dequeue()) {
-        EXPECT_EQ(result->seqNumber_, last_seq);
+        EXPECT_EQ(result->seqNum_, last_seq);
         last_seq++;
     }
 }

@@ -12,7 +12,9 @@
 #include <chrono>
 #include <atomic>
 #include <sstream>
- #include <iomanip>
+#include <iomanip>
+#include <syncstream>
+
 
 #include <string>
 #include <string_view>
@@ -22,6 +24,27 @@
 #include <vector>
 
 #include <boost/filesystem.hpp>
+
+namespace Numerics {
+
+  constexpr bool isPowerOfTwo(std::size_t x) {
+    return x && !(x & (x - 1));
+  }
+
+  constexpr std::size_t nextPowerOfTwo(std::size_t x) {
+    x--;
+    x |= x >> 1;
+    x |= x >> 2;
+    x |= x >> 4;
+    x |= x >> 8;
+    x |= x >> 16;
+    x |= x >> 32;
+    x++;
+    return x;
+  }
+
+}
+
 
 namespace Message {
 
@@ -122,6 +145,16 @@ namespace Utils {
   }
 
   std::ostream& operator<<(std::ostream& os, const Message::order& o) {
+    os << "{ "
+       << o.seqNum_ << ", "
+       << o.time_   << ", "
+       << o.side_   << ", "
+       << o.price_  << ", "
+       << o.size_   << "}";
+    return os;
+  }
+
+  std::osyncstream& operator<<(std::osyncstream& os, const Message::order& o) {
     os << "{ "
        << o.seqNum_ << ", "
        << o.time_   << ", "

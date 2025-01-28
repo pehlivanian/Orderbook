@@ -9,6 +9,7 @@
 #include "utils.hpp"
 #include "eventstream.hpp"
 #include "publisher.hpp"
+#include "orderedqueue.hpp"
 #include "consumer.hpp"
 #include "serializer.hpp"
 

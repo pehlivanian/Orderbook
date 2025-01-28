@@ -19,7 +19,7 @@ if (PROFILE_RESULTS)
   SET(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -pg")
 endif()
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -pedantic -O3")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++20 -pedantic -O3")
 set(warnings "-Wall -Wparenthesis -Wno_unused_Variable -Wno_sign_compare")
 
 if (NOT CMAKE_BUILD_TYPE)
@@ -38,11 +38,17 @@ add_library(priorityqueueadaptor OBJECT priorityqueueadaptor.cpp)
 add_library(orderstatisticstreeadaptor OBJECT orderstatisticstreeadaptor.cpp)
 add_library(orderbook OBJECT orderbook.cpp)
 
+#######
+# DRIVER
+########
 add_executable(driver driver.cpp)
 target_compile_definitions(driver PUBLIC -DCXX_FILESYSTEM_HEADER=<boost/filesystem.hpp>)
 target_compile_definitions(driver PUBLIC -DCXX_FILESYSTEM_NAMESPACE=boost::filesystem)
 target_link_libraries(driver PUBLIC Boost::filesystem pthread)
 
+#############################
+# ORDEREDQUEUE EXAMPLE DRIVER
+#############################
 add_executable(orderedqueue_driver orderedqueue_driver.cpp)
 
 #######

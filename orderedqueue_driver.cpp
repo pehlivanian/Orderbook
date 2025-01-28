@@ -22,26 +22,26 @@ std::mt19937 gen{dev()};
 
 struct eventLite {
   std::string payload_;
-  unsigned long seqNumber_;
+  unsigned long seqNum_;
 
   eventLite() = default;
   eventLite(std::string p, unsigned long sn) :
     payload_{p},
-    seqNumber_{sn}
+    seqNum_{sn}
   {}
     
 };
 
 std::ostream& operator<<(std::ostream& os, const eventLite& e) {
   os << "{ "
-     << e.seqNumber_ << ", "
+     << e.seqNum_ << ", "
      << e.payload_ << "}";
   return os;
 }
 
 std::osyncstream& operator<<(std::osyncstream& oss, const eventLite& e) {
   oss << "{ "
-      << e.seqNumber_ << ", "
+      << e.seqNum_ << ", "
       << e.payload_ << "}";
   return oss;
 }
@@ -69,10 +69,10 @@ auto main(int argc, char **argv) -> int {
     q->enqueue(EventType{p, s});
   };
 
-  auto consume = [&q](std::optional<EventType>& e){
-    e = q->try_dequeue();
-    if (e.has_value()) {
-      sync_cout << *e << std::endl;
+  auto consume = [&q](EventType& e){
+    bool found = q->try_dequeue(e);
+    if (found) {
+      sync_cout << e << std::endl;
     } else {
       sync_cout << "<NO VALUE>" << std::endl;
     }
@@ -99,8 +99,8 @@ auto main(int argc, char **argv) -> int {
   
   /*
   for (std::size_t i=0; i<num_consumers; ++i) {
-    std::optional<EventType> oe;
-    consumers.push_back(std::thread(consume, std::ref(oe)));
+    EventType e;
+    consumers.push_back(std::thread(consume, std::ref(e)));
   }
 
   for (std::size_t i=0; i<num_consumers; ++i) {
@@ -109,9 +109,12 @@ auto main(int argc, char **argv) -> int {
   */
 
   for (std::size_t i=0; i<num_consumers; ++i) {
-    std::optional<EventType> e = q->try_dequeue();
-    if (e.has_value()) {
-      sync_cout << *e << std::endl;
+    EventType e;
+
+    bool found = q->try_dequeue(e);
+
+    if (found) {
+      sync_cout << e << std::endl;
     } else {
       sync_cout << "<NO VALUE>" << std::endl;
     }

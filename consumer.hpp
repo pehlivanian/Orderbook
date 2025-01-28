@@ -3,6 +3,7 @@
 
 #include "eventstream.hpp"
 #include "concurrentqueue.h"
+#include "orderedqueue.hpp"
 #include "publisher.hpp"
 #include "utils.hpp"
 
@@ -19,6 +20,7 @@ using namespace Message;
 #include <atomic>
 #include <mutex>
 #include <chrono>
+#include <cstdlib>
 
 #define sync_cout std::osyncstream(std::cout)
 
@@ -119,60 +121,14 @@ private:
 
 };
 
-template<typename OrderType>
-class ActivatedQueue {
-public:
-  ActivatedQueue() :
-    seqNum_{AtomicIndex{}}
-  {
-    for (auto& el : statusBit_) {
-      el.store(false);
-    }
-  }
-
-  void enqueue(OrderType& el) {
-    // sync_cout << "QUEUE 2: ENQUEUED: " << el.seqNum_ << std::endl;
-    // std::cout << "ENQUEUED: " << el.seqNum_ << " : " << el << std::endl;
-    cargo_[el.seqNum_] = std::move(el);
-    statusBit_[el.seqNum_].store(true, std::memory_order_release);
-    // sync_cout << "STATUS BIT SET ON QUEUE2" << std::endl;9
-  }
-
-  bool try_dequeue(OrderType& el) {
-    
-    // sync_cout << "ATTEMPTING TO DEQUEUE FROM QUEUE 2 (IN TRY_DEQUEUE): " << seqNum_.get() << std::endl;
-    if (statusBit_[seqNum_.get()].load()) {
-      el = std::move(cargo_[seqNum_.get()]);
-      // sync_cout << "QUEUE 2: DEQUEUED: " << el.seqNum_ << std::endl;
-      statusBit_[seqNum_.get()].store(false);
-      // sync_cout << "QUEUE2: SET STATUS BIT: " << el.seqNum_ << std::endl;
-      seqNum_.incr();
-
-      return true;
-    }
-    else {
-      // sync_cout << "ATTEMPT TO DEQUEUE FROM QUEUE 2 FAILED (IN TRY_DEQUEUE)" << std::endl;
-      return false;
-    }
-
-  }
-
-private:
-  
-  AtomicIndex seqNum_;
-  std::array<std::atomic<bool>, 50000> statusBit_;
-  std::array<OrderType, 50000> cargo_;
-
-};
-
 template<typename EventType, typename OrderType>
 class Consumer {
 
   using SPMCInnerQ = moodycamel::ConcurrentQueue<EventType>;
-  using MPMCq = ActivatedQueue<OrderType>;
+  using OrderedMPMCq = OrderedMPMCQueue<OrderType>;
 
   // const int num_workers = std::thread::hardware_concurrency() - 1;
-  const int num_workers = 4;
+  const int num_workers = 12;
 
   struct worker {
     
@@ -195,7 +151,11 @@ class Consumer {
 	  // std::cout << "ID: " << id_ << " : " << e << std::endl;
 	  // sync_cout << "QUEUE 1 DEQUEUED: " << e.seqNum_ << std::endl;
 	  auto o = eventLOBSTERToOrder(e);
-	  std::this_thread::sleep_for(100ms);
+
+	  // Artificial delay
+	  // int delay = rand()%1000;
+	  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
 	  outer_->MPMCqueue_target_->enqueue(o);
 	  // sync_cout << "QUEUE 2: ENQUEUED: " << e.seqNum_ << std::endl;
 	} else {
@@ -209,7 +169,7 @@ class Consumer {
   };
 
 public:
-  Consumer(std::shared_ptr<SPMCInnerQ> q_source, std::shared_ptr<MPMCq> q_target) :
+  Consumer(std::shared_ptr<SPMCInnerQ> q_source, std::shared_ptr<OrderedMPMCq> q_target) :
     SPMCqueue_source_{q_source},
     MPMCqueue_target_{q_target}
   {}
@@ -260,7 +220,7 @@ public:
 
 private:
   std::shared_ptr<SPMCInnerQ> SPMCqueue_source_;
-  std::shared_ptr<MPMCq> MPMCqueue_target_;
+  std::shared_ptr<OrderedMPMCq> MPMCqueue_target_;
 };
 
 #endif

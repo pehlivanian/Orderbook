@@ -1,37 +1,30 @@
+#ifndef __ORDEREDQUEUE_HPP__
+#define __ORDEREDQUEUE_HPP__
+
+#include "utils.hpp"
+#include "orderedqueue.hpp"
+
 #include <atomic>
 #include <memory>
 #include <optional>
 #include <array>
 #include <cstddef>
+#include <iostream>
 #include <thread>
+#include <syncstream>
+#include <cstdlib>
 
+#define sync_cout std::osyncstream(std::cout)
 
-namespace numerics {
-  
-  constexpr bool isPowerOfTwo(std::size_t x) {
-    return x && !(x & (x - 1));
-  }
+using namespace Numerics;
+using namespace Utils;
 
-  constexpr std::size_t nextPowerOfTwo(std::size_t x) {
-    x--;
-    x |= x >> 1;
-    x |= x >> 2;
-    x |= x >> 4;
-    x |= x >> 8;
-    x |= x >> 16;
-    x |= x >> 32;
-    x++;
-    return x;
-  }
-}
-
-
-template<typename EventType, size_t RequestCapacity>
+template<typename EventType, size_t RequestCapacity=2<<20>
 class OrderedMPMCQueue {
 private:
 
-  static constexpr std::size_t Capacity = numerics::isPowerOfTwo(RequestCapacity)  ?
-    RequestCapacity : numerics::nextPowerOfTwo(RequestCapacity);
+  static constexpr std::size_t Capacity = isPowerOfTwo(RequestCapacity)  ?
+  RequestCapacity : nextPowerOfTwo(RequestCapacity);
   
   static constexpr std::size_t MASK = Capacity - 1;
 
@@ -78,7 +71,7 @@ public:
   }
 
   bool try_enqueue(EventType event) {
-    const size_t seqNum = event.seqNumber_;
+    const size_t seqNum = event.seqNum_;
     const size_t idx = getIndex(seqNum);
         
     // Reserve a spot by incrementing write count
@@ -92,7 +85,7 @@ public:
     // Check if the slot is available
     if (node.ready.load(std::memory_order_acquire)) {
       EventType* oldEvent = node.event.load(std::memory_order_relaxed);
-      if (oldEvent && oldEvent->seqNumber_ >= seqNum) {
+      if (oldEvent && oldEvent->seqNum_ >= seqNum) {
 	return false;  // Slot still in use
       }
     }
@@ -116,6 +109,17 @@ public:
     return true;
   }
 
+  bool try_dequeue(EventType& e) {
+    std::optional<EventType> opt = try_dequeue();
+    if (opt.has_value()) {
+      e = *opt;
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+
   std::optional<EventType> try_dequeue() {
     size_t currentSeq = nextToConsume_.load(std::memory_order_relaxed);
     const size_t idx = getIndex(currentSeq);
@@ -129,7 +133,7 @@ public:
 
     // Get the event and verify sequence number
     EventType* event = node.event.load(std::memory_order_acquire);
-    if (!event || event->seqNumber_ != currentSeq) {
+    if (!event || event->seqNum_ != currentSeq) {
       return std::nullopt;
     }
 
@@ -150,6 +154,8 @@ public:
     EventType result = std::move(*event);
     delete event;
     node.event.store(nullptr, std::memory_order_release);
+
+    std::cout << result.seqNum_ << std::endl;
         
     return result;
   }
@@ -171,3 +177,6 @@ public:
       nextToConsume_.load(std::memory_order_relaxed);
   }
 };
+
+
+#endif
