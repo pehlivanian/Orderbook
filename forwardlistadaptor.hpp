@@ -1,42 +1,45 @@
 #ifndef __FORWARDLISTADAPTOR_HPP__
 #define __FORWARDLISTADAPTOR_HPP__
 
-#include <iostream>
 #include <forward_list>
+#include <vector>
+#include <optional>
+#include <cmath>
 
-#include "orderbook.hpp"
 #include "utils.hpp"
+#include "orderbook.hpp"
 
-using namespace Utils;
+using namespace Message;
 
-template<typename Compare, int N>
-class ForwardListAdaptor {
+template<typename Compare, std::size_t N>
+class ForwardListAdaptor : public BookFeeder<ForwardListAdaptor<Compare, N>> {
 public:
+    using ContainerType = std::forward_list<Message::order>;
+    using CompareType = Compare;
+  using TradesType = std::vector<trade>;
+    static constexpr std::size_t NumLevels = N;
 
-  using ContainerType = std::forward_list<order>;
-  static int NumLevels;
-
-  ForwardListAdaptor() : book_{{}} {
-    init_();
-  }
-
-  ContainerType getBook() const { return book_; }
-
-  friend BookSide<ForwardListAdaptor>;
+  ForwardListAdaptor() = default;
+  std::vector<Book::PriceLevel> getBook() const;
+  std::optional<long> getBBOprice() const;
 
 private:
-  void insert_(const order&);
-  void remove_(const order&);
-  void update_(const order&);
-  void execute_(const order&);
+    // These need to be accessible to BookFeeder through CRTP
+    friend class BookFeeder<ForwardListAdaptor<Compare, N>>;
+  
+  ack insert_(const Message::order& o);
+  ack remove_(const Message::order& o);
+  ack update_(const Message::order& o);
+  std::pair<ack, std::optional<TradesType>>execute_(const Message::order& o);
 
-  ContainerType book_;
+  
+  std::pair<typename ContainerType::iterator, typename ContainerType::iterator>
+  findInsertionPoint(const Message::order& o);
+  
+  ContainerType orders_;
 
-  void init_();
+  friend class BookSide<ForwardListAdaptor<Compare, N>>;
 };
-
-template<typename Compare, int N>
-int ForwardListAdaptor<Compare, N>::NumLevels = N;
 
 #include "forwardlistadaptor_impl.hpp"
 

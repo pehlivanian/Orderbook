@@ -9,6 +9,7 @@
 #include <vector>
 #include <fstream>
 #include <fstream>
+#include <optional>
 #include <regex>
 #include <ranges>
 
@@ -22,10 +23,17 @@ using namespace Message;
 using namespace Utils;
 
 using order = struct order;
+using TradesType = std::vector<trade>;
 
 //
 // T ~ BookSide<OrderStatisticsTreeAdaptor<int, std::less<int>>
 //
+
+struct BookSnapshot {
+  std::vector<Book::PriceLevel> bids;
+  std::vector<Book::PriceLevel> asks;
+};
+
 
 template<typename T>
 class BookFeeder {
@@ -36,20 +44,20 @@ class BookFeeder {
       UPDATED = 2,
       ERROR = 3,
       NUMSTATES
-  };
+      };
 
 public:
 
   BookFeeder() : current_state_{STATES::START} {}
 
-  void insert(const order& o) { static_cast<T*>(this)->insert_(o); }
-  void remove(const order& o) { static_cast<T*>(this)->remove_(o); }
-  void update(const order& o) { static_cast<T*>(this)->update_(o); }
-  void execute(const order& o) { static_cast<T*>(this)->insert_(o); }
+  ack insert(const order& o) { return static_cast<T*>(this)->insert_(o); }
+  ack remove(const order& o) { return static_cast<T*>(this)->remove_(o); }
+  ack update(const order& o) { return static_cast<T*>(this)->update_(o); }
+  std::pair<ack, std::optional<TradesType>> execute(const order& o) { return static_cast<T*>(this)->execute_(o); }
 
 
   STATES get_current_state() const { return current_state_; }  
-  
+ 
 private:
   STATES current_state_;
 
@@ -73,18 +81,21 @@ public:
 
   BookSide() : side_{Container{}} {}
 
-  void processEvent(const order&, int, char);
+  std::pair<ack, std::optional<TradesType>> processEvent(const order&, int, char);
 
   Container getSide() const { return side_; }
+
+  std::vector<Book::PriceLevel> getBook() const;
+  std::optional<long> getBBOprice() const { return side_.getBBOprice(); }
 
   friend BookFeeder<BookSide<Container>>;
   friend std::ostream& operator<< <> (std::ostream&, const BookSide<Container>*);
 
 private:
-  void insert_(const order& o) { side_.insert_(o); }
-  void remove_(const order& o) { side_.remove_(o); }
-  void update_(const order& o) { side_.update_(o); }
-  void execute_(const order& o) { side_.execute_(o); }
+  ack insert_(const order& o) { return side_.insert_(o); }
+  ack remove_(const order& o) { return side_.remove_(o); }
+  ack update_(const order& o) { return side_.update_(o); }
+  std::pair<ack, std::optional<TradesType>> execute_(const order& o) { return side_.execute_(o); }
 
   Container side_;
 };
@@ -104,10 +115,14 @@ public:
 
   OrderBook();
   void replay(std::string);
+  void processEvent(const Message::eventLOBSTER& event);
   
-private:
+  BookSnapshot getBook() const;
+  std::optional<long> getBestBidPrice() const { return bidSide_->getBBOprice(); }
+  std::optional<long> getBestAskPrice() const { return askSide_->getBBOprice(); }
+  
 
-  
+private:
 
   std::unique_ptr<BookSide<BidContainer>> bidSide_;
   std::unique_ptr<BookSide<AskContainer>> askSide_;

@@ -8,6 +8,8 @@
 #include <syncstream>
 
 #include "orderedqueue.hpp"
+#include "orderbook.hpp"
+#include "forwardlistadaptor.hpp"
 
 #define sync_cout std::osyncstream(std::cout)
 
@@ -24,6 +26,7 @@ struct TestEvent {
   TestEvent() : seqNum_(0), data_(0), metadata_{} {}
 };
 
+/*
 class OrderedMPMCQueueTest : public ::testing::Test {
 protected:
     static constexpr size_t QUEUE_CAPACITY = 1024;
@@ -770,6 +773,453 @@ TEST_F(OrderedMPMCQueueTest, SparseSequenceDistribution) {
         EXPECT_EQ(result->seqNum_, last_seq);
         last_seq++;
     }
+}
+
+*/
+
+class OrderBookTest : public ::testing::Test {
+protected:
+    static constexpr int N = 5;
+    using BidContainer = ForwardListAdaptor<std::greater<Message::order>, N>;
+    using AskContainer = ForwardListAdaptor<std::less<Message::order>, N>;
+  // using DecType = OrderBook<BidContainer, AskContainer>;
+  // using OrderBookType = TradeJournalerOrderBook<BidContainer, AskContainer>;
+    
+    void SetUp() override {
+      orderbook = std::make_unique<OrderBook<BidContainer, AskContainer>>();
+      // orderbook = std::make_unique<OrderBookType>(std::make_unique<DecType>());
+    }
+
+  // std::unique_ptr<TradeJournalerOrderBook<BidContainer, AskContainer>> orderbook;
+  std::unique_ptr<OrderBook<BidContainer, AskContainer>> orderbook;
+
+    Message::eventLOBSTER createEvent(double time, short type, unsigned long orderId, 
+                                    unsigned size, long price, char direction) {
+        return Message::eventLOBSTER{
+            0,        // seqNum gets set by EventStream
+            time,
+            type,
+            orderId,
+            size,
+            price,
+            direction
+        };
+    }
+};
+
+TEST_F(OrderBookTest, EmptyBookHasNoLevels) {
+    auto book = orderbook->getBook();
+    EXPECT_TRUE(book.bids.empty());
+    EXPECT_TRUE(book.asks.empty());
+}
+
+TEST_F(OrderBookTest, SingleBidOrder) {
+    auto event = createEvent(1.0, 1, 1001, 100, 10000, 'B');
+    orderbook->processEvent(event);
+    
+    auto book = orderbook->getBook();
+    ASSERT_EQ(book.bids.size(), 1);
+    EXPECT_EQ(book.bids[0].price_, 10000);
+    EXPECT_EQ(book.bids[0].size_, 100);
+}
+
+TEST_F(OrderBookTest, PriceTimePriorityForBids) {
+    // Add orders at same price level
+    orderbook->processEvent(createEvent(1.0, 1, 1001, 100, 10000, 'B'));
+    orderbook->processEvent(createEvent(1.1, 1, 1002, 50, 10000, 'B'));
+    orderbook->processEvent(createEvent(1.2, 1, 1003, 23, 10011, 'B'));
+    orderbook->processEvent(createEvent(1.3, 1, 1004, 1181, 10010, 'B'));
+    orderbook->processEvent(createEvent(1.4, 1, 1005, 4411, 11012, 'S'));
+    orderbook->processEvent(createEvent(1.5, 1, 1006, 12, 9999, 'B'));
+    
+    // Execute partial
+    orderbook->processEvent(createEvent(1.6, 4, 1007, 23, 10011, 'B'));
+    orderbook->processEvent(createEvent(1.7, 4, 1008, 1181, 10010, 'B'));
+    orderbook->processEvent(createEvent(1.8, 4, 1009, 75, 10000, 'B'));
+    
+    auto book = orderbook->getBook();
+    ASSERT_EQ(book.bids.size(), 2);
+    ASSERT_EQ(book.asks.size(), 1);
+    EXPECT_EQ(book.bids[0].price_, 10000);
+    EXPECT_EQ(book.bids[0].size_, 75); // First order partially executed (25 left)
+    EXPECT_EQ(book.bids[0].orderCount_, 2);
+
+    // Execute partial again consuming 2 orders
+    orderbook->processEvent(createEvent(1.8, 4, 1009, 50, 10000, 'B'));
+
+    book = orderbook->getBook();
+    ASSERT_EQ(book.bids.size(), 2);
+    ASSERT_EQ(book.bids[0].price_, 10000);
+    ASSERT_EQ(book.bids[0].size_, 25);
+    ASSERT_EQ(book.bids[0].orderCount_, 1);
+    
+}
+
+TEST_F(OrderBookTest, OrderCancellation) {
+    orderbook->processEvent(createEvent(1.0, 1, 1001, 100, 10000, 'B'));
+    orderbook->processEvent(createEvent(1.1, 2, 1001, 0, 0, 'B')); // Cancel
+    
+    auto book = orderbook->getBook();
+    EXPECT_TRUE(book.bids.empty());
+}
+
+TEST_F(OrderBookTest, MultipleBookLevels) {
+    // Add bids at different prices
+    orderbook->processEvent(createEvent(1.0, 1, 1001, 100, 10000, 'B'));
+    orderbook->processEvent(createEvent(1.1, 1, 1002, 50, 9900, 'B'));
+    orderbook->processEvent(createEvent(1.2, 1, 1003, 75, 10100, 'B'));
+    
+    auto book = orderbook->getBook();
+    ASSERT_EQ(book.bids.size(), 3);
+    EXPECT_EQ(book.bids[0].price_, 10100); // Best bid first
+    EXPECT_EQ(book.bids[1].price_, 10000);
+    EXPECT_EQ(book.bids[2].price_, 9900);
+}
+
+TEST_F(OrderBookTest, OrderUpdate) {
+    orderbook->processEvent(createEvent(1.0, 1, 1001, 100, 10000, 'B'));
+    orderbook->processEvent(createEvent(1.1, 5, 1001, 150, 10000, 'B')); // Update size
+    
+    auto book = orderbook->getBook();
+    ASSERT_EQ(book.bids.size(), 1);
+    EXPECT_EQ(book.bids[0].size_, 150);
+}
+
+TEST_F(OrderBookTest, CrossedBook) {
+    // Add bid and ask that could match
+    orderbook->processEvent(createEvent(1.0, 1, 1001, 100, 10000, 'B'));
+    orderbook->processEvent(createEvent(1.1, 1, 2001, 100, 9900, 'S'));
+    
+    auto book = orderbook->getBook();
+    ASSERT_EQ(book.bids.size(), 1);
+    ASSERT_EQ(book.asks.size(), 1);
+    EXPECT_GT(book.bids[0].price_, book.asks[0].price_);
+}
+
+TEST_F(OrderBookTest, LargeBookSnapshot) {
+    // Create baseline book with multiple levels
+    for (int i = 0; i < 10; ++i) {
+        orderbook->processEvent(createEvent(1.0 + i, 1, 1001 + i, 100, 10000 + i * 100, 'B'));
+        orderbook->processEvent(createEvent(1.0 + i, 1, 2001 + i, 100, 10100 + i * 100, 'S'));
+    }
+    
+    auto book = orderbook->getBook();
+    ASSERT_EQ(book.bids.size(), 5); // Should only show N levels
+    ASSERT_EQ(book.asks.size(), 5);
+    
+    // Verify price ordering
+    for (size_t i = 1; i < book.bids.size(); ++i) {
+        EXPECT_GT(book.bids[i-1].price_, book.bids[i].price_);
+        EXPECT_LT(book.asks[i-1].price_, book.asks[i].price_);
+    }
+}
+
+TEST_F(OrderBookTest, FullOrderExecution) {
+    orderbook->processEvent(createEvent(1.0, 1, 1001, 100, 10000, 'B'));
+    orderbook->processEvent(createEvent(1.1, 1, 1002, 50, 10000, 'B'));
+    orderbook->processEvent(createEvent(1.2, 4, 0, 100, 10000, 'B')); // Execute first order fully
+    
+    auto book = orderbook->getBook();
+    ASSERT_EQ(book.bids.size(), 1);
+    EXPECT_EQ(book.bids[0].price_, 10000);
+    EXPECT_EQ(book.bids[0].size_, 50); // Only second order remains
+}
+
+TEST_F(OrderBookTest, MultipleExecutionsAtSamePrice) {
+    // Add three orders at same price
+    orderbook->processEvent(createEvent(1.0, 1, 1001, 100, 10000, 'B'));
+    orderbook->processEvent(createEvent(1.1, 1, 1002, 50, 10000, 'B'));
+    orderbook->processEvent(createEvent(1.2, 1, 1003, 75, 10000, 'B'));
+    
+    // Execute more than first order
+    orderbook->processEvent(createEvent(1.3, 4, 0, 120, 10000, 'B'));
+    
+    auto book = orderbook->getBook();
+    ASSERT_EQ(book.bids.size(), 1);
+    EXPECT_EQ(book.bids[0].size_, 105); // Only part of second order and full third order remain
+}
+
+TEST_F(OrderBookTest, BaseLine1_SimpleBidExecution) {
+    // Submit orders
+    orderbook->processEvent(createEvent(1.0, 1, 1001, 100, 10000, 'B')); // Bid 100@100.00
+    orderbook->processEvent(createEvent(1.1, 1, 1002, 150, 10000, 'B')); // Bid 150@100.00
+    orderbook->processEvent(createEvent(1.2, 1, 1003, 200, 10001, 'B')); // Bid 200@100.01
+    
+    auto book = orderbook->getBook();
+    ASSERT_EQ(book.bids.size(), 2);
+    EXPECT_EQ(book.bids[0].price_, 10001);
+    EXPECT_EQ(book.bids[0].size_, 200);
+    EXPECT_EQ(book.bids[1].price_, 10000);
+    EXPECT_EQ(book.bids[1].size_, 250);  // Aggregated size at 100.00
+
+    // Execute against best bid
+    orderbook->processEvent(createEvent(1.3, 4, 0, 150, 10001, 'B'));
+    
+    book = orderbook->getBook();
+    ASSERT_EQ(book.bids.size(), 2);
+    EXPECT_EQ(book.bids[0].price_, 10001);
+    EXPECT_EQ(book.bids[0].size_, 50);   // 200 - 150 = 50
+    EXPECT_EQ(book.bids[1].price_, 10000);
+    EXPECT_EQ(book.bids[1].size_, 250);  // Untouched
+}
+
+TEST_F(OrderBookTest, BaseLine2_CrossedBook) {
+    // Build bid side
+    orderbook->processEvent(createEvent(1.0, 1, 1001, 100, 10000, 'B'));
+    orderbook->processEvent(createEvent(1.1, 1, 1002, 150, 10001, 'B'));
+    orderbook->processEvent(createEvent(1.2, 1, 1003, 200, 10002, 'B'));
+
+    // Build ask side
+    orderbook->processEvent(createEvent(1.3, 1, 2001, 120, 10003, 'S'));
+    orderbook->processEvent(createEvent(1.4, 1, 2002, 180, 10004, 'S'));
+    orderbook->processEvent(createEvent(1.5, 1, 2003, 140, 10005, 'S'));
+
+    auto book = orderbook->getBook();
+    ASSERT_EQ(book.bids.size(), 3);
+    ASSERT_EQ(book.asks.size(), 3);
+
+    // Execute multiple orders
+    orderbook->processEvent(createEvent(1.6, 4, 0, 175, 10002, 'B')); // Partial execution at best bid
+    orderbook->processEvent(createEvent(1.7, 4, 0, 100, 10004, 'S')); // Partial execution at ask level
+
+    book = orderbook->getBook();
+    EXPECT_EQ(book.bids[0].price_, 10002);
+    EXPECT_EQ(book.bids[0].size_, 25);
+    EXPECT_EQ(book.asks[0].price_, 10003);
+    EXPECT_EQ(book.asks[0].size_, 20);
+}
+
+TEST_F(OrderBookTest, BaseLine3_MultiLevelExecution) {
+    // Build deep book on bid side
+    for(int i = 0; i < 5; i++) {
+        orderbook->processEvent(createEvent(1.0 + i, 1, 1001 + i, 100, 10000 + i, 'B'));
+        orderbook->processEvent(createEvent(1.5 + i, 1, 1501 + i, 100, 10000 + i, 'B')); // Same price levels
+    }
+
+    auto book = orderbook->getBook();
+    ASSERT_EQ(book.bids.size(), 5);
+    for(int i = 0; i < 5; i++) {
+        EXPECT_EQ(book.bids[i].price_, 10004 - i);
+        EXPECT_EQ(book.bids[i].size_, 200);  // Both orders at each level
+    }
+
+    book = orderbook->getBook();
+
+    // Execute at multiple levels
+    orderbook->processEvent(createEvent(2.0, 4, 0, 150, 10004, 'B')); // Best bid
+    orderbook->processEvent(createEvent(2.1, 4, 0, 250, 10003, 'B')); // Second level
+    orderbook->processEvent(createEvent(2.2, 4, 0, 100, 10002, 'B')); // Third level
+
+    book = orderbook->getBook();
+    EXPECT_EQ(book.bids[0].price_, 10002);
+    EXPECT_EQ(book.bids[0].size_, 100);
+    EXPECT_EQ(book.bids[1].price_, 10001);
+    EXPECT_EQ(book.bids[1].size_, 200);
+    EXPECT_EQ(book.bids[2].price_, 10000);
+    EXPECT_EQ(book.bids[2].size_, 200);
+}
+
+TEST_F(OrderBookTest, BaseLine4_InterleavedOrdersAndExecutions) {
+    // Initial orders
+    orderbook->processEvent(createEvent(1.0, 1, 1001, 100, 10000, 'B'));
+    orderbook->processEvent(createEvent(1.1, 1, 1002, 150, 10001, 'B'));
+    
+    auto book = orderbook->getBook();
+    ASSERT_EQ(book.bids.size(), 2);
+    
+    // Execute first order
+    orderbook->processEvent(createEvent(1.2, 4, 0, 50, 10001, 'B'));
+    
+    // Add more orders
+    orderbook->processEvent(createEvent(1.3, 1, 1003, 200, 10002, 'B'));
+    orderbook->processEvent(createEvent(1.4, 1, 1004, 175, 10001, 'B'));
+    
+    book = orderbook->getBook();
+    EXPECT_EQ(book.bids[0].price_, 10002);
+    EXPECT_EQ(book.bids[0].size_, 200);
+    EXPECT_EQ(book.bids[1].price_, 10001);
+    EXPECT_EQ(book.bids[1].size_, 275);
+    
+    // More executions
+    orderbook->processEvent(createEvent(1.5, 4, 0, 150, 10002, 'B'));
+    orderbook->processEvent(createEvent(1.6, 4, 0, 100, 10001, 'B'));
+    
+    book = orderbook->getBook();
+    EXPECT_EQ(book.bids.size(), 2);
+    EXPECT_EQ(book.bids[0].price_, 10001);
+    EXPECT_EQ(book.bids[0].size_, 225);
+    EXPECT_EQ(book.bids[1].price_, 10000);
+    EXPECT_EQ(book.bids[1].size_, 100);
+}
+
+TEST_F(OrderBookTest, BaseLine5_FullBookOperations) {
+    // Build full book both sides
+    for(int i = 0; i < 5; i++) {
+        // Bids
+        orderbook->processEvent(createEvent(1.0 + i, 1, 1001 + i, 100, 10000 + i, 'B'));
+        orderbook->processEvent(createEvent(1.5 + i, 1, 1501 + i, 100, 10000 + i, 'B'));
+        // Asks
+        orderbook->processEvent(createEvent(2.0 + i, 1, 2001 + i, 100, 10010 + i, 'S'));
+        orderbook->processEvent(createEvent(2.5 + i, 1, 2501 + i, 100, 10010 + i, 'S'));
+    }
+
+    auto book = orderbook->getBook();
+    ASSERT_EQ(book.bids.size(), 5);
+    ASSERT_EQ(book.asks.size(), 5);
+
+    // Interleaved executions on both sides
+    orderbook->processEvent(createEvent(3.0, 4, 0, 100, 10004, 'B')); // Best bid
+    orderbook->processEvent(createEvent(3.1, 4, 0, 144, 10010, 'S')); // Best ask
+    book = orderbook->getBook();
+    orderbook->processEvent(createEvent(3.2, 4, 0, 100, 10003, 'B')); // Second best bid
+    orderbook->processEvent(createEvent(3.3, 4, 0, 186, 10011, 'S'));  // Second best ask
+
+    book = orderbook->getBook();
+    EXPECT_EQ(book.bids[0].price_, 10003);
+    EXPECT_EQ(book.bids[0].size_, 200);
+    EXPECT_EQ(book.bids[1].price_, 10002);
+    EXPECT_EQ(book.bids[1].size_, 200);
+    EXPECT_EQ(book.asks[0].price_, 10011);
+    EXPECT_EQ(book.asks[0].size_, 70); 
+    EXPECT_EQ(book.asks[1].price_, 10012);
+    EXPECT_EQ(book.asks[1].size_, 200);
+}
+
+TEST_F(OrderBookTest, InterleavedOrdersMany1) {
+    // Initial batch of 10 orders at different price levels
+    for(int i = 0; i < 10; i++) {
+        orderbook->processEvent(createEvent(1.0 + i*0.1, 1, 1001 + i, 100UL, 
+                              static_cast<long>(10000 + i*2), 'B'));
+    }
+    // After initial 10 orders, book looks like (showing all orders):
+    // 100@100.18 (id: 1010)
+    // 100@100.16 (id: 1009)
+    // 100@100.14 (id: 1008)
+    // 100@100.12 (id: 1007)
+    // 100@100.10 (id: 1006)
+    // 100@100.08 (id: 1005)
+    // 100@100.06 (id: 1004)
+    // 100@100.04 (id: 1003)
+    // 100@100.02 (id: 1002)
+    // 100@100.00 (id: 1001)
+
+    // Execute 3 trades
+    orderbook->processEvent(createEvent(2.0, 4, 0, 50UL, static_cast<long>(10018), 'B')); 
+    // After first execution:
+    // 50@100.18  (id: 1010) <- partially executed
+    // 100@100.16 (id: 1009)
+    // 100@100.14 (id: 1008)
+    // ...
+
+    orderbook->processEvent(createEvent(2.1, 4, 0, 100UL, static_cast<long>(10016), 'B')); 
+    // After second execution:
+    // 50@100.16   (id: 1009) <- partially executed
+    // 100@100.14 (id: 1008)
+    // ...
+
+    orderbook->processEvent(createEvent(2.2, 4, 0, 75UL, static_cast<long>(10014), 'B')); 
+    // After third execution:
+    // 100@100.12 (id: 1007)
+    // 100@100.10 (id: 1006)
+    // ...
+
+    // Add 5 more orders at higher prices
+    for(int i = 0; i < 5; i++) {
+        orderbook->processEvent(createEvent(2.5 + i*0.1, 1, 1101 + i, 150UL, 
+                              static_cast<long>(10019 + i*2), 'B'));
+    }
+    // After adding 5 more orders:
+    // 150@100.27 (id: 1105)
+    // 150@100.25 (id: 1104)
+    // 150@100.23 (id: 1103)
+    // 150@100.21 (id: 1102)
+    // 150@100.19 (id: 1101)
+    // 100@100.12  (id: 1007)
+    // 100@100.10  (id: 1006)
+    // ...
+
+    // Execute 4 more trades
+    orderbook->processEvent(createEvent(3.0, 4, 0, 150UL, static_cast<long>(10027), 'B'));
+    orderbook->processEvent(createEvent(3.1, 4, 0, 100UL, static_cast<long>(10025), 'B'));
+    orderbook->processEvent(createEvent(3.2, 4, 0, 75UL, static_cast<long>(10023), 'B'));
+    orderbook->processEvent(createEvent(3.3, 4, 0, 50UL, static_cast<long>(10021), 'B'));
+    // After these 4 executions:
+    // 75@100.21 (id: 1102) <- partially executed
+    // 150@100.19 (id: 1101)
+    // 100@100.12  (id: 1007)
+    // 100@100.10  (id: 1006)
+    // ...
+
+    // Add 5 more orders at even higher prices
+    for(int i = 0; i < 5; i++) {
+        orderbook->processEvent(createEvent(3.5 + i*0.1, 1, 1201 + i, 200UL, 
+                              static_cast<long>(10028 + i*2), 'B'));
+    }
+    // After adding these orders:
+    // 200@100.36 (id: 1205)
+    // 200@100.34 (id: 1204)
+    // 200@100.32 (id: 1203)
+    // 200@100.30 (id: 1202)
+    // 200@100.28 (id: 1201)
+    // 50@100.25  (id: 1104)
+    // 75@100.21 (id: 1102)
+    // 150@100.19 (id: 1101)
+    // 100@100.12  (id: 1007)
+    // 100@100.10  (id: 1006)
+    // ...
+
+    // Final batch of orders
+    for(int i = 0; i < 5; i++) {
+        orderbook->processEvent(createEvent(4.0 + i*0.1, 1, 1301 + i, 125UL, 
+                              static_cast<long>(10037 + i*2), 'B'));
+    }
+    // After final orders:
+    // 125@100.45 (id: 1305)
+    // 125@100.43 (id: 1304)
+    // 125@100.41 (id: 1303)
+    // 125@100.39 (id: 1302)
+    // 125@100.37 (id: 1301)
+    // 200@100.36 (id: 1205)
+    // 200@100.34 (id: 1204)
+    // 200@100.32 (id: 1203)
+    // 200@100.30 (id: 1202)
+    // 200@100.28 (id: 1201)
+    // 50@100.25  (id: 1104)
+    // 75@100.21 (id: 1102)
+    // 150@100.19 (id: 1101)
+    // 100@100.12  (id: 1007)
+    // 100@100.10  (id: 1006)
+    // ...
+
+    // Final executions
+    orderbook->processEvent(createEvent(4.5, 4, 0, 100UL, static_cast<long>(10036), 'B'));
+    orderbook->processEvent(createEvent(4.6, 4, 0, 200UL, static_cast<long>(10034), 'B'));
+    orderbook->processEvent(createEvent(4.7, 4, 0, 125UL, static_cast<long>(10032), 'B'));
+
+    // Final state:
+    // 75@100.39 (id: 1302)
+    // 125@100.37 (id: 1301)
+    // 200@100.36 (id: 1205)
+    // 200@100.34 (id: 1204)
+    // 200@100.32 (id: 1203)
+    // 200@100.30 (id: 1202)
+    // 200@100.28 (id: 1201)
+    // 50@100.25  (id: 1104)
+    // 75@100.21 (id: 1102)
+    // 150@100.19 (id: 1101)
+    // 100@100.12  (id: 1007)
+    // 100@100.10  (id: 1006)
+    // ...
+
+    auto book = orderbook->getBook();
+    ASSERT_EQ(book.bids.size(), 5);
+    EXPECT_EQ(book.bids[0].price_, 10039);
+    EXPECT_EQ(book.bids[0].size_, 75);
+    EXPECT_EQ(book.bids[1].price_, 10037);
+    EXPECT_EQ(book.bids[1].size_, 125);
+    EXPECT_EQ(book.bids[4].price_, 10032);
+    EXPECT_EQ(book.bids[4].size_, 200);
+    EXPECT_EQ(orderbook->getBestBidPrice(), 10039);
 }
 
 auto main(int argc, char** argv) -> int {

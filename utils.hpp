@@ -25,6 +25,14 @@
 
 #include <boost/filesystem.hpp>
 
+namespace Book {
+  struct PriceLevel {
+    long price_;
+    unsigned long size_;
+    std::size_t orderCount_;
+  };
+}
+
 namespace Numerics {
 
   constexpr bool isPowerOfTwo(std::size_t x) {
@@ -47,6 +55,21 @@ namespace Numerics {
 
 
 namespace Message {
+
+  struct ack {
+    unsigned long seqNum_;
+    unsigned long orderId_;
+    bool acked_;
+    std::string reasonRejected_;
+  };
+
+  struct trade {
+    unsigned long seqNum_;
+    unsigned long orderId_;
+    char side_;
+    long price_;
+    unsigned long size_;
+  };
 
 struct order {   
   unsigned long seqNum_;

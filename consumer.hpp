@@ -128,7 +128,7 @@ class Consumer {
   using OrderedMPMCq = OrderedMPMCQueue<OrderType>;
 
   // const int num_workers = std::thread::hardware_concurrency() - 1;
-  const int num_workers = 12;
+  const int num_workers = 1;
 
   struct worker {
     

@@ -14,6 +14,9 @@
 #include <syncstream>
 #include <cstdlib>
 
+#define DEBUG
+#undef DEBUG
+
 #define sync_cout std::osyncstream(std::cout)
 
 using namespace Numerics;
@@ -23,25 +26,25 @@ template<typename EventType, size_t RequestCapacity=2<<20>
 class OrderedMPMCQueue {
 private:
 
+  // Ring buffer on std::array for incoming queue implementation.
+  // Size is 2**n to allow for bitmasking in getIndex
+
   static constexpr std::size_t Capacity = isPowerOfTwo(RequestCapacity)  ?
   RequestCapacity : nextPowerOfTwo(RequestCapacity);
   
   static constexpr std::size_t MASK = Capacity - 1;
+  static constexpr size_t CACHE_LINE_SIZE = 64;
 
   struct Node {
     std::atomic<EventType*> event{nullptr};
     std::atomic<bool> ready{false};
     std::atomic<bool> consumed{false};
   };
-
-  static constexpr size_t CACHE_LINE_SIZE = 64;
     
-  // Avoid false sharing
   alignas(CACHE_LINE_SIZE) std::array<Node, Capacity> buffer_;
   alignas(CACHE_LINE_SIZE) std::atomic<size_t> writeCount_{0};
   alignas(CACHE_LINE_SIZE) std::atomic<size_t> nextToConsume_{0};
-  
-  // Get buffer index from sequence number
+
   size_t getIndex(size_t seqNum) const {
     return seqNum & MASK;
   }
@@ -58,7 +61,6 @@ public:
     }
   }
 
-  // Disable copying and moving
   OrderedMPMCQueue(const OrderedMPMCQueue&) = delete;
   OrderedMPMCQueue& operator=(const OrderedMPMCQueue&) = delete;
   OrderedMPMCQueue(OrderedMPMCQueue&&) = delete;
@@ -71,29 +73,26 @@ public:
   }
 
   bool try_enqueue(EventType event) {
-    const size_t seqNum = event.seqNum_;
-    const size_t idx = getIndex(seqNum);
+    const size_t targetSeqNum = event.seqNum_;
+    const size_t idx = getIndex(targetSeqNum);
         
-    // Reserve a spot by incrementing write count
     size_t expectedCount = writeCount_.load(std::memory_order_relaxed);
-    if (expectedCount >= seqNum + Capacity) {
+    if (expectedCount >= targetSeqNum + Capacity) {
       return false;  // Queue is full
     }
 
     Node& node = buffer_[idx];
         
-    // Check if the slot is available
     if (node.ready.load(std::memory_order_acquire)) {
       EventType* oldEvent = node.event.load(std::memory_order_relaxed);
-      if (oldEvent && oldEvent->seqNum_ >= seqNum) {
+      if (oldEvent && oldEvent->seqNum_ >= targetSeqNum) {
 	return false;  // Slot still in use
       }
     }
 
-    // Create new event on heap
+    // Heap construction - we can do better in future 
     EventType* newEvent = new EventType(std::move(event));
         
-    // Store the event pointer
     EventType* expected = nullptr;
     if (!node.event.compare_exchange_strong(expected, newEvent,
 					    std::memory_order_release,
@@ -102,8 +101,8 @@ public:
       return false;
     }
 
-    // Mark the node as ready
     node.ready.store(true, std::memory_order_release);
+    node.consumed.store(false, std::memory_order_release);
     writeCount_.fetch_add(1, std::memory_order_release);
         
     return true;
@@ -126,41 +125,36 @@ public:
         
     Node& node = buffer_[idx];
         
-    // Check if the next event is ready
     if (!node.ready.load(std::memory_order_acquire)) {
       return std::nullopt;
     }
 
-    // Get the event and verify sequence number
     EventType* event = node.event.load(std::memory_order_acquire);
     if (!event || event->seqNum_ != currentSeq) {
       return std::nullopt;
     }
 
-    // Try to mark as consumed
     bool expected = false;
     if (!node.consumed.compare_exchange_strong(expected, true,
 					       std::memory_order_acq_rel)) {
       return std::nullopt;
     }
 
-    // Successfully dequeued, increment next to consume
     nextToConsume_.fetch_add(1, std::memory_order_release);
         
-    // Reset node state
     node.ready.store(false, std::memory_order_release);
         
-    // Move event data and cleanup
     EventType result = std::move(*event);
     delete event;
     node.event.store(nullptr, std::memory_order_release);
 
-    std::cout << result.seqNum_ << std::endl;
+#ifdef DEBUG
+    sync_cout << result.seqNum_ << std::endl;
+#endif
         
     return result;
   }
 
-  // Helper methods
   bool empty() const {
     size_t current = nextToConsume_.load(std::memory_order_relaxed);
     const size_t idx = getIndex(current);
