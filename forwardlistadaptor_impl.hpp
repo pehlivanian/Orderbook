@@ -64,11 +64,11 @@ ForwardListAdaptor<Compare, N>::execute_(const Message::order& exec_order) {
         if (remaining >= next->size_) {
             remaining -= next->size_;
 	    
-	    // Perist trade information
+	    // Persist trade information
 	    // Liquidity-providing order
-	    trades.emplace_back(next->seqNum_, next->orderId_, standingOrderSide, next->price_, next->size_);
+	    trades.emplace_back(next->seqNum_, exec_order.seqNum_, next->orderId_, standingOrderSide, next->price_, next->size_);
 	    // Liquidity-taking order
-	    trades.emplace_back(exec_order.seqNum_, exec_order.orderId_, exec_order.side_, next->price_, next->size_);
+	    trades.emplace_back(exec_order.seqNum_, next->seqNum_, exec_order.orderId_, exec_order.side_, next->price_, next->size_);
 	    
             next = orders_.erase_after(it);
         } else {
@@ -76,12 +76,9 @@ ForwardListAdaptor<Compare, N>::execute_(const Message::order& exec_order) {
 
 	    // Persist trade information
 	    // Liquidity-providing order
-	    trades.emplace_back(next->seqNum_, next->orderId_, standingOrderSide, next->price_, remaining);
+	    trades.emplace_back(next->seqNum_, exec_order.seqNum_, next->orderId_, standingOrderSide, next->price_, remaining);
 	    // Liquidity-taking order
-	    trades.emplace_back(exec_order.seqNum_, exec_order.orderId_, exec_order.side_, next->price_, remaining);
-
-	    // Liquidity_taking order
-	    trades.emplace_back();
+	    trades.emplace_back(exec_order.seqNum_, next->seqNum_, exec_order.orderId_, exec_order.side_, next->price_, remaining);
 
             remaining = 0;
             break;
@@ -119,11 +116,36 @@ ForwardListAdaptor<Compare, N>::update_(const Message::order& o) {
 
 template<typename Compare, std::size_t N>
 std::optional<long>
-ForwardListAdaptor<Compare, N>::getBBOprice() const {
+ForwardListAdaptor<Compare, N>::getBBOPrice() const {
   if (!orders_.empty())
     return (*orders_.begin()).price_;
   else
     return std::nullopt;
+}
+
+template<typename Compare, std::size_t N>
+std::optional<long>
+ForwardListAdaptor<Compare, N>::getBBOSize() const {
+  if (!orders_.empty())
+    return (*orders_.begin()).size_;
+  else
+    return std::nullopt;
+}
+
+template<typename Compare, std::size_t N>
+std::optional<unsigned>
+ForwardListAdaptor<Compare, N>::sizeAtPrice(long price) const {
+  if (!orders_.empty()) {
+    unsigned qty = 0;
+    auto it = orders_.begin();
+    while (CompareLong()(it->price_, price) || it->price_ == price) {
+      qty += it->size_;
+      ++it;
+    }
+    return qty;
+  } else {
+    return std::nullopt;
+  }
 }
 
 template<typename Compare, std::size_t N>

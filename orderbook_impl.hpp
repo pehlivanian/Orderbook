@@ -58,7 +58,114 @@ OrderBook<BidContainer, AskContainer>::getBook() const {
 }
 
 template<typename BidContainer, typename AskContainer>
-void 
+AckTrades
+OrderBook<BidContainer, AskContainer>::processUndersizedCross(const Message::eventLOBSTER& event,
+							      bool isBid) {
+  auto tradeEvent = eventLOBSTER{event};
+  tradeEvent.eventType_ = 4;
+  tradeEvent.direction_ = isBid ? 'S' : 'B';
+  
+  Message::order tradeOrder = Utils::eventLOBSTERToOrder(tradeEvent);
+  
+  if (isBid) {
+    return askSide_->processEvent(tradeOrder, 0, 'E');
+  } else {
+    return bidSide_->processEvent(tradeOrder, 0, 'E');
+  }
+
+}
+
+
+
+template<typename BidContainer, typename AskContainer>
+AckTrades
+OrderBook<BidContainer, AskContainer>::processOversizedCross(const Message::eventLOBSTER& event,
+							     bool isBid) {
+
+  AckTrades res1, res2;
+  
+  unsigned remainder = event.size_;
+  TradesType allTrades;
+
+  using SideType = std::variant<std::reference_wrapper<BookSide<BidContainer>>, std::reference_wrapper<BookSide<AskContainer>>>;
+  using CompType = std::variant<typename BidContainer::CompareLong, typename AskContainer::CompareLong>;
+
+  SideType execSide = isBid ? static_cast<SideType>(std::ref(*askSide_)) : static_cast<SideType>(std::ref(*bidSide_));
+  SideType orderSide = isBid ? static_cast<SideType>(std::ref(*bidSide_)) : static_cast<SideType>(std::ref(*askSide_));
+  CompType comparer = isBid ? static_cast<CompType>(typename AskContainer::CompareLong()) : static_cast<CompType>(typename BidContainer::CompareLong());
+
+  /* All spelled out
+     
+  std::variant<std::reference_wrapper<BookSide<BidContainer>>, std::reference_wrapper<BookSide<AskContainer>>> execSide = isBid ?
+    std::variant<std::reference_wrapper<BookSide<BidContainer>>, std::reference_wrapper<BookSide<AskContainer>>>(std::ref(*askSide_)) :
+    std::variant<std::reference_wrapper<BookSide<BidContainer>>, std::reference_wrapper<BookSide<AskContainer>>>(std::ref(*bidSide_));
+
+  std::variant<BookSide<BidContainer>, BookSide<AskContainer>> orderSide = isBid ?
+    std::variant<BookSide<BidContainer>, BookSide<AskContainer>>(*bidSide_) :
+    std::variant<BookSide<BidContainer>, BookSide<AskContainer>>(*askSide_);
+
+  std::variant<typename AskContainer::CompareLong, typename BidContainer::CompareLong> comparer = isBid ? 
+    std::variant<typename AskContainer::CompareLong, typename BidContainer::CompareLong>(typename AskContainer::CompareLong()) : 
+    std::variant<typename AskContainer::CompareLong, typename BidContainer::CompareLong>(typename BidContainer::CompareLong());
+
+  */
+
+  while (!std::visit([&event, &execSide](auto& comp)
+		     { 
+		       return comp(event.price_, std::visit([](auto& side)
+							    { 
+							      return *(side.get().getBBOPrice()); 
+							    }, 
+							    execSide)
+				   ); 
+		     }, comparer) && remainder) {
+    
+    auto tradeEvent = eventLOBSTER{event};
+    
+    unsigned bookSize = std::visit([](auto& side){ return *(side.get().getBBOSize()); }, execSide);
+    unsigned tradeSize = bookSize > remainder ? remainder : bookSize;
+    
+    if (tradeSize) {
+      tradeEvent.eventType_ = 4;
+      tradeEvent.direction_ = isBid? 'S' : 'B';
+      tradeEvent.size_ = tradeSize;
+      
+      Message::order tradeOrder = Utils::eventLOBSTERToOrder(tradeEvent);
+      
+      res1 = std::visit([&tradeOrder](auto& side){ return side.get().processEvent(tradeOrder, 0, 'E'); }, execSide);
+      // res1 = execSide->processEvent(tradeOrder, 0, 'E');
+      for (auto & trade : *res1.second)
+	allTrades.push_back(trade);
+      
+      // Inside has been executed against
+      remainder -= tradeSize;
+
+    } 
+    else {
+      remainder = 0;
+    }
+  }
+  
+  // Now remainder of order is smaller than current BBO size
+  
+  // Post order
+  
+  if (remainder) {
+    auto orderEvent = eventLOBSTER{event};
+    orderEvent.size_ = remainder;
+    
+    Message::order remainderOrder = Utils::eventLOBSTERToOrder(orderEvent);
+    
+    res2 = std::visit([&remainderOrder](auto& side){ return side.get().processEvent(remainderOrder, 0, 'I'); }, orderSide);
+    // res2 = bidSide_->processEvent(remainderOrder, 0, 'I');
+    return {res2.first, allTrades};
+  }
+
+  return {res1.first, allTrades};
+}
+
+template<typename BidContainer, typename AskContainer>
+AckTrades
 OrderBook<BidContainer, AskContainer>::processEvent(const Message::eventLOBSTER& event) {
     // Convert LOBSTER event type to message type
     char msgType;
@@ -70,7 +177,7 @@ OrderBook<BidContainer, AskContainer>::processEvent(const Message::eventLOBSTER&
         case 5: msgType = 'U'; break;  // Update order
         default:
             std::cerr << "Unknown event type: " << event.eventType_ << std::endl;
-            return;
+            return {ack{}, std::nullopt};
     }
 
     // Create order from event
@@ -78,21 +185,41 @@ OrderBook<BidContainer, AskContainer>::processEvent(const Message::eventLOBSTER&
     
     // Route to appropriate side
     if (event.direction_ == 'B') {
-      if (auto bbo = askSide_->getBBOprice(); bbo && event.price_ >= *bbo) {
-	// Book is locked/crossed
-	// 1. Execute appropriate orders
-	// 2. Determine remaining quantity
-	// 3. Post in bid book
+      if (msgType == 'I') {
+	if (auto bbo = askSide_->getBBOPrice(); bbo && event.price_ >= *bbo) {
+	  if (event.size_ <= askSide_->getBBOSize()) {
+
+	    return processUndersizedCross(event, true);
+
+	  } else {
+
+	    return processOversizedCross(event, true);
+	  }
+	} else {
+	  // Normal order entry
+	  return bidSide_->processEvent(order, 0, msgType);
+	}
+      } else {
+	return bidSide_->processEvent(order, 0, msgType);
       }
-      bidSide_->processEvent(order, 0, msgType);
     } else if (event.direction_ == 'S') {
-      if (auto bbo = bidSide_->getBBOprice(); bbo && event.price_ <= *bbo) {
-	// Book is locked/crossed
-	// 1. Execute appropriate orders
-	// 2. Determine remaining quantity
-	// 3. Post in ask book
+      if (msgType == 'I') {
+	if (auto bbo = bidSide_->getBBOPrice(); bbo && event.price_ <= *bbo) {
+	  if (event.size_ <= bidSide_->getBBOSize()) {
+
+	    return processUndersizedCross(event, false);
+
+	  } else {
+	    
+	    return processOversizedCross(event, false);
+
+	  }
+	} else {
+	  // Normal order entry
+	  return askSide_->processEvent(order, 0, msgType);
+	}
       }
-      askSide_->processEvent(order, 0, msgType);
+      return askSide_->processEvent(order, 0, msgType);
     }
 }
 

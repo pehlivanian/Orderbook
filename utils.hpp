@@ -11,6 +11,9 @@
 #include <ctype.h>
 #include <chrono>
 #include <atomic>
+#include <vector>
+#include <utility>
+#include <optional>
 #include <sstream>
 #include <iomanip>
 #include <syncstream>
@@ -30,6 +33,11 @@ namespace Book {
     long price_;
     unsigned long size_;
     std::size_t orderCount_;
+  };
+
+  struct BookSnapshot {
+    std::vector<PriceLevel> bids;
+    std::vector<PriceLevel> asks;
   };
 }
 
@@ -65,6 +73,7 @@ namespace Message {
 
   struct trade {
     unsigned long seqNum_;
+    unsigned long counterSeqNum_;
     unsigned long orderId_;
     char side_;
     long price_;
@@ -102,6 +111,9 @@ struct eventLOBSTER {
   long price_;
   char direction_;
 };
+
+  using TradesType = std::vector<trade>;
+  using AckTrades = std::pair<ack, std::optional<TradesType>>;
 
 } // namespace Message
 

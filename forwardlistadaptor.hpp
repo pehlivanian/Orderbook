@@ -16,12 +16,28 @@ class ForwardListAdaptor : public BookFeeder<ForwardListAdaptor<Compare, N>> {
 public:
     using ContainerType = std::forward_list<Message::order>;
     using CompareType = Compare;
+  
+  using CompareLong = std::conditional_t<
+    std::is_same_v<Compare, std::less<Message::order>>,
+    std::less<long>,
+    std::greater<long>
+  >;
+
+  using CompareUnsignedLong = std::conditional_t<
+    std::is_same_v<Compare, std::less<Message::order>>,
+    std::less<unsigned long>,
+    std::greater<unsigned long>
+  >;
+  
+
   using TradesType = std::vector<trade>;
     static constexpr std::size_t NumLevels = N;
 
   ForwardListAdaptor() = default;
   std::vector<Book::PriceLevel> getBook() const;
-  std::optional<long> getBBOprice() const;
+  std::optional<long> getBBOPrice() const;
+  std::optional<long> getBBOSize() const;
+  std::optional<unsigned> sizeAtPrice(long) const;
 
 private:
     // These need to be accessible to BookFeeder through CRTP

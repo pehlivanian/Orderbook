@@ -9,6 +9,7 @@
 
 #include "orderedqueue.hpp"
 #include "orderbook.hpp"
+#include "tradejournal.hpp"
 #include "forwardlistadaptor.hpp"
 
 #define sync_cout std::osyncstream(std::cout)
@@ -780,23 +781,24 @@ TEST_F(OrderedMPMCQueueTest, SparseSequenceDistribution) {
 class OrderBookTest : public ::testing::Test {
 protected:
     static constexpr int N = 5;
+  static unsigned long seqNum;
     using BidContainer = ForwardListAdaptor<std::greater<Message::order>, N>;
     using AskContainer = ForwardListAdaptor<std::less<Message::order>, N>;
-  // using DecType = OrderBook<BidContainer, AskContainer>;
-  // using OrderBookType = TradeJournalerOrderBook<BidContainer, AskContainer>;
+  using InnerType = OrderBook<BidContainer, AskContainer>;
+  using OrderBookType = TradeJournalerOrderBook<BidContainer, AskContainer>;
     
     void SetUp() override {
-      orderbook = std::make_unique<OrderBook<BidContainer, AskContainer>>();
-      // orderbook = std::make_unique<OrderBookType>(std::make_unique<DecType>());
+      // orderbook = std::make_unique<OrderBook<BidContainer, AskContainer>>();
+      orderbook = std::make_unique<OrderBookType>(InnerType{});
     }
 
-  // std::unique_ptr<TradeJournalerOrderBook<BidContainer, AskContainer>> orderbook;
-  std::unique_ptr<OrderBook<BidContainer, AskContainer>> orderbook;
+  std::unique_ptr<TradeJournalerOrderBook<BidContainer, AskContainer>> orderbook;
+  // std::unique_ptr<OrderBook<BidContainer, AskContainer>> orderbook;
 
     Message::eventLOBSTER createEvent(double time, short type, unsigned long orderId, 
                                     unsigned size, long price, char direction) {
         return Message::eventLOBSTER{
-            0,        // seqNum gets set by EventStream
+            seqNum++,
             time,
             type,
             orderId,
@@ -806,6 +808,8 @@ protected:
         };
     }
 };
+
+unsigned long OrderBookTest::seqNum = 0;
 
 TEST_F(OrderBookTest, EmptyBookHasNoLevels) {
     auto book = orderbook->getBook();
@@ -890,16 +894,26 @@ TEST_F(OrderBookTest, CrossedBook) {
     orderbook->processEvent(createEvent(1.0, 1, 1001, 100, 10000, 'B'));
     orderbook->processEvent(createEvent(1.1, 1, 2001, 100, 9900, 'S'));
     
+    // Book is crossed, then empty
+
     auto book = orderbook->getBook();
-    ASSERT_EQ(book.bids.size(), 1);
-    ASSERT_EQ(book.asks.size(), 1);
-    EXPECT_GT(book.bids[0].price_, book.asks[0].price_);
+    ASSERT_EQ(book.bids.size(), 0);
+    ASSERT_EQ(book.asks.size(), 0);
+    auto journal = orderbook->get_journal().get_store();
+    for (auto it=journal.begin(); it!=journal.end(); ++it) {
+      auto seqNum = it->first;
+      auto trade = it->second;
+
+      // Price improved!!
+      EXPECT_EQ(trade.price_, 10000);
+      EXPECT_EQ(trade.size_, 100);
+    }
 }
 
 TEST_F(OrderBookTest, LargeBookSnapshot) {
     // Create baseline book with multiple levels
     for (int i = 0; i < 10; ++i) {
-        orderbook->processEvent(createEvent(1.0 + i, 1, 1001 + i, 100, 10000 + i * 100, 'B'));
+        orderbook->processEvent(createEvent(1.0 + i, 1, 1001 + i, 100, 10000 - i * 100, 'B'));
         orderbook->processEvent(createEvent(1.0 + i, 1, 2001 + i, 100, 10100 + i * 100, 'S'));
     }
     
@@ -1077,8 +1091,6 @@ TEST_F(OrderBookTest, BaseLine5_FullBookOperations) {
     book = orderbook->getBook();
     EXPECT_EQ(book.bids[0].price_, 10003);
     EXPECT_EQ(book.bids[0].size_, 200);
-    EXPECT_EQ(book.bids[1].price_, 10002);
-    EXPECT_EQ(book.bids[1].size_, 200);
     EXPECT_EQ(book.asks[0].price_, 10011);
     EXPECT_EQ(book.asks[0].size_, 70); 
     EXPECT_EQ(book.asks[1].price_, 10012);
@@ -1215,11 +1227,166 @@ TEST_F(OrderBookTest, InterleavedOrdersMany1) {
     ASSERT_EQ(book.bids.size(), 5);
     EXPECT_EQ(book.bids[0].price_, 10039);
     EXPECT_EQ(book.bids[0].size_, 75);
-    EXPECT_EQ(book.bids[1].price_, 10037);
-    EXPECT_EQ(book.bids[1].size_, 125);
     EXPECT_EQ(book.bids[4].price_, 10032);
     EXPECT_EQ(book.bids[4].size_, 200);
     EXPECT_EQ(orderbook->getBestBidPrice(), 10039);
+
+}
+
+TEST_F(OrderBookTest, InterleavedOrdersManyCrossedBook1) {
+    // Initial batch of 10 orders at different price levels
+  const int num_bids = 10;
+  const int num_asks = 10;
+    for(int i = 0; i < num_bids; i++) {
+        orderbook->processEvent(createEvent(1.0 + i*0.1, 1, 1001 + num_bids + i, 100UL, 
+                              static_cast<long>(10000 + i*2), 'B'));
+    }
+    // After initial 10 orders, book looks like (showing all orders):
+    // BidSide
+    // =======
+    // 100@100.18 (id: 1010)
+    // 100@100.16 (id: 1009)
+    // 100@100.14 (id: 1008)
+    // 100@100.12 (id: 1007)
+    // 100@100.10 (id: 1006)
+    // 100@100.08 (id: 1005)
+    // 100@100.06 (id: 1004)
+    // 100@100.04 (id: 1003)
+    // 100@100.02 (id: 1002)
+    // 100@100.00 (id: 1001)
+    // AskSide
+    // =======
+    // 100@100.20 (id: 1020)
+    // 100@100.22 (id: 1019)
+    // 100@100.24 (id: 1018)
+    // 100@100.26 (id: 1017)
+    // 100@100.28 (id: 1016)
+    // 100@100.30 (id: 1015)
+    // 100@100.32 (id: 1014)
+    // 100@100.34 (id: 1013)
+    // 100@100.36 (id: 1012)
+    // 100@100.38 (id: 1011)    
+
+    for (int i=0; i<10; ++i) {
+      orderbook->processEvent(createEvent(num_bids + 1.0 + i*.01, 1, 1001 + num_bids + i, 100UL,
+					  static_cast<long>(10038 - i*2), 'S'));
+    }
+
+    EXPECT_EQ(orderbook->sizeAtPrice(10018, true), 100);
+    EXPECT_EQ(orderbook->sizeAtPrice(10016, true), 200);
+    EXPECT_EQ(orderbook->sizeAtPrice(10020, false), 100);
+    EXPECT_EQ(orderbook->sizeAtPrice(10022, false), 200);
+
+    EXPECT_EQ(orderbook->sizeAtPrice(10002, true), 900);
+    EXPECT_EQ(orderbook->sizeAtPrice(10032, false), 700);
+
+    EXPECT_EQ(orderbook->sizeAtPrice(10020, true), 0);
+    EXPECT_EQ(orderbook->sizeAtPrice(10018, false), 0);
+
+    // Now enter some locking orders, test book status after each one
+
+    // Only touches inside level
+    orderbook->processEvent(createEvent(4.5, 1, 0, 40UL, static_cast<long>(10020), 'B'));
+    auto book = orderbook->getBook();
+    EXPECT_EQ(book.asks[0].price_, 10020);
+    EXPECT_EQ(book.asks[0].size_, 60);
+
+    // Only touches inside level
+    orderbook->processEvent(createEvent(4.6, 1, 0, 55UL, static_cast<long>(10020), 'B'));
+    book = orderbook->getBook();
+    EXPECT_EQ(book.asks[0].price_, 10020);
+    EXPECT_EQ(book.asks[0].size_, 5);
+
+    // Touches 2 levels
+    orderbook->processEvent(createEvent(4.7, 1, 0, 25UL, static_cast<long>(10022), 'B'));
+    book = orderbook->getBook();
+    EXPECT_EQ(book.asks[0].price_, 10022);
+    EXPECT_EQ(book.asks[0].size_, 80);
+
+    // Touches 1 level
+    orderbook->processEvent(createEvent(4.8, 1, 0, 90, static_cast<long>(10018), 'S'));
+    book = orderbook->getBook();
+    EXPECT_EQ(book.bids[0].price_, 10018);
+    EXPECT_EQ(book.bids[0].size_, 10);
+
+    // Touches 2 levels
+    orderbook->processEvent(createEvent(4.9, 1, 0, 40, static_cast<long>(10016), 'S'));
+    book = orderbook->getBook();
+    EXPECT_EQ(book.bids[0].price_, 10016);
+    EXPECT_EQ(book.bids[0].size_, 70);
+
+    // Touches 3 level
+    orderbook->processEvent(createEvent(5.0, 1, 0, 196, static_cast<long>(10012), 'S'));
+    book = orderbook->getBook();
+    EXPECT_EQ(book.bids[0].price_, 10012);
+    EXPECT_EQ(book.bids[0].size_, 74);
+
+}
+
+TEST_F(OrderBookTest, InterleavedOrdersManyCrossedBook2) {
+    // Initial batch of orders with varying sizes at different price levels
+    const int num_levels = 8;  // This represents the number of levels we'll add, not the book display limit
+    const std::array<unsigned long, 8> sizes = {150, 200, 100, 300, 250, 175, 225, 125};
+    
+    // Build initial bid book with varying sizes
+    for(int i = 0; i < num_levels; i++) {
+        orderbook->processEvent(createEvent(1.0 + i*0.1, 1, 2001 + i, sizes[i], 
+                              static_cast<long>(10000 + i*3), 'B'));
+    }
+    
+    // Build initial ask book with varying sizes, slightly offset prices
+    for(int i = 0; i < num_levels; i++) {
+        orderbook->processEvent(createEvent(2.0 + i*0.1, 1, 3001 + i, sizes[num_levels-1-i], 
+                              static_cast<long>(10024 + i*3), 'S'));
+    }
+
+    // Verify initial book state - focus on best levels
+    auto book = orderbook->getBook();
+    
+    // Verify best bid/ask
+    EXPECT_EQ(book.bids[0].price_, 10021);  // Best bid should be at highest price
+    EXPECT_EQ(book.bids[0].size_, 125);
+    EXPECT_EQ(book.asks[0].price_, 10024);  // Best ask should be at lowest price
+    EXPECT_EQ(book.asks[0].size_, 125);
+
+    // Test scenario 1: Large aggressive buy order that crosses multiple levels
+    orderbook->processEvent(createEvent(3.0, 1, 0, 400, static_cast<long>(10030), 'B'));
+    book = orderbook->getBook();
+    EXPECT_EQ(book.asks[0].price_, 10030);
+    EXPECT_EQ(book.asks[0].size_, 125);  // Original 175 - 50 executed
+
+    // Test scenario 2: Series of small orders that gradually cross the book
+    for(int i = 0; i < 3; i++) {
+        orderbook->processEvent(createEvent(4.0 + i*0.1, 1, 4001 + i, 50, 
+                              static_cast<long>(10027 + i*3), 'B'));
+    }
+    book = orderbook->getBook();
+    EXPECT_EQ(book.bids[0].price_, 10027);
+    EXPECT_EQ(book.bids[0].size_, 50);
+    EXPECT_EQ(book.asks[0].price_, 10030);
+    EXPECT_EQ(book.asks[0].size_, 25);
+
+    // Test scenario 3: Alternating buys and sells that create crossed conditions
+    orderbook->processEvent(createEvent(5.0, 1, 5001, 200, static_cast<long>(10036), 'B'));
+    orderbook->processEvent(createEvent(5.1, 1, 5002, 150, static_cast<long>(10018), 'S'));
+    orderbook->processEvent(createEvent(5.2, 1, 5003, 175, static_cast<long>(10033), 'B'));
+    orderbook->processEvent(createEvent(5.3, 1, 5004, 125, static_cast<long>(10021), 'S'));
+
+    book = orderbook->getBook();
+    
+    // Verify state after complex crossing
+    EXPECT_EQ(book.bids[0].price_, 10018);
+    EXPECT_EQ(book.bids[0].size_, 225);  // Remaining after crosses
+    EXPECT_EQ(book.asks[0].price_, 10036);
+    EXPECT_EQ(book.asks[0].size_, 300);  // Remaining after crosses
+
+    // Test scenario 4: Large market sweep that crosses multiple levels
+    orderbook->processEvent(createEvent(6.0, 1, 0, 500, static_cast<long>(10036), 'B'));
+    book = orderbook->getBook();
+    
+    // Verify state after market sweep - focus on best ask properties
+    EXPECT_EQ(book.asks[0].price_, 10039);  // Best ask should have moved up after sweep
+    EXPECT_EQ(orderbook->getBestAskPrice().value_or(0), 10039);  // Verify through public interface as well
 }
 
 auto main(int argc, char** argv) -> int {

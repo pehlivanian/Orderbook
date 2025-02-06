@@ -10,6 +10,7 @@
 #include <fstream>
 #include <fstream>
 #include <optional>
+#include <variant>
 #include <regex>
 #include <ranges>
 
@@ -20,6 +21,7 @@
 #include "eventstream.hpp"
 
 using namespace Message;
+using namespace Book;
 using namespace Utils;
 
 using order = struct order;
@@ -28,12 +30,6 @@ using TradesType = std::vector<trade>;
 //
 // T ~ BookSide<OrderStatisticsTreeAdaptor<int, std::less<int>>
 //
-
-struct BookSnapshot {
-  std::vector<Book::PriceLevel> bids;
-  std::vector<Book::PriceLevel> asks;
-};
-
 
 template<typename T>
 class BookFeeder {
@@ -53,7 +49,7 @@ public:
   ack insert(const order& o) { return static_cast<T*>(this)->insert_(o); }
   ack remove(const order& o) { return static_cast<T*>(this)->remove_(o); }
   ack update(const order& o) { return static_cast<T*>(this)->update_(o); }
-  std::pair<ack, std::optional<TradesType>> execute(const order& o) { return static_cast<T*>(this)->execute_(o); }
+  AckTrades execute(const order& o) { return static_cast<T*>(this)->execute_(o); }
 
 
   STATES get_current_state() const { return current_state_; }  
@@ -80,13 +76,32 @@ public:
   const int BookSize = Container::NumLevels;
 
   BookSide() : side_{Container{}} {}
+  BookSide(const BookSide& rhs) :
+    side_{rhs.side_}
+  {}
+  BookSide(BookSide&& rhs) :
+    side_{std::move(rhs.side)}
+  {}
+  BookSide(const Container& rhs) :
+    side_{rhs}
+  {}
 
-  std::pair<ack, std::optional<TradesType>> processEvent(const order&, int, char);
+  BookSide(Container&& rhs) :
+    side_{std::move(rhs.side_)}
+  {}
+
+  BookSide(std::unique_ptr<BookSide<Container>> rhs) :
+    side_{std::make_unique<BookSide<Container>>(rhs)}
+  {}
+
+  AckTrades processEvent(const order&, int, char);
 
   Container getSide() const { return side_; }
 
   std::vector<Book::PriceLevel> getBook() const;
-  std::optional<long> getBBOprice() const { return side_.getBBOprice(); }
+  std::optional<long> getBBOPrice() const { return side_.getBBOPrice(); }
+  std::optional<unsigned long> getBBOSize() const { return side_.getBBOSize(); }
+  std::optional<unsigned long> sizeAtPrice(long price) { return side_.sizeAtPrice(price); }
 
   friend BookFeeder<BookSide<Container>>;
   friend std::ostream& operator<< <> (std::ostream&, const BookSide<Container>*);
@@ -114,14 +129,36 @@ public:
   // const std::string input_file = "GOOG_2012-06-21_34200000_57600000_message_1.csv";
 
   OrderBook();
+  OrderBook(const OrderBook& rhs) :
+    bidSide_{rhs.bidSide_},
+    askSide_{rhs.askSide_}
+  {}
+
+  OrderBook(OrderBook&& rhs) :
+    bidSide_{std::move(rhs.bidSide_)},
+    askSide_{std::move(rhs.askSide_)}
+  {}
+	       
   void replay(std::string);
-  void processEvent(const Message::eventLOBSTER& event);
+
+  AckTrades processUndersizedCross(const Message::eventLOBSTER&, bool);
+  AckTrades processOversizedCross(const Message::eventLOBSTER&, bool);
+
+  AckTrades processEvent(const Message::eventLOBSTER& event);
   
   BookSnapshot getBook() const;
-  std::optional<long> getBestBidPrice() const { return bidSide_->getBBOprice(); }
-  std::optional<long> getBestAskPrice() const { return askSide_->getBBOprice(); }
+  std::optional<long> getBestBidPrice() const { return bidSide_->getBBOPrice(); }
+  std::optional<unsigned long> getBestBidSize() const { return bidSide_->getBBOSize(); }
+  std::optional<long> getBestAskPrice() const { return askSide_->getBBOPrice(); }
+  std::optional<unsigned long> getBestAskSize() const { return askSide_->getBBOSize(); }
+  std::optional<unsigned long> sizeAtPrice(long price, bool isBid) const { 
+    return isBid ? bidSide_->sizeAtPrice(price) : askSide_->sizeAtPrice(price);
+  } 
   
-
+  std::optional<long> getBestPrice(bool isBid) { return isBid ? getBestBidPrice() : getBestAskPrice(); }
+  std::optional<unsigned long> getBestSize(bool isBid) { return isBid ? getBestBidSize() : getBestAskSize(); }
+  
+  
 private:
 
   std::unique_ptr<BookSide<BidContainer>> bidSide_;
