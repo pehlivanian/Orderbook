@@ -29,10 +29,65 @@ BookSide<Container>::processEvent(const order& o, int l, char msgType) {
 }
 
 template<typename BidContainer, typename AskContainer>
+OrderBook<BidContainer, AskContainer>::OrderBook(const OrderBook& rhs) :
+  bidSide_{rhs.bidSide_},
+  askSide_{rhs.askSide_}
+{}
+
+template<typename BidContainer, typename AskContainer>
+OrderBook<BidContainer, AskContainer>::OrderBook(OrderBook&& rhs) :
+  bidSide_{std::move(rhs.bidSide_)},
+  askSide_{std::move(rhs.askSide_)}
+{}
+
+template<typename BidContainer, typename AskContainer>
 OrderBook<BidContainer, AskContainer>::OrderBook() {
   bidSide_.reset(new BookSide<BidContainer>{});
   askSide_.reset(new BookSide<AskContainer>{});
 }
+
+template<typename BidContainer, typename AskContainer>
+std::optional<long>
+OrderBook<BidContainer, AskContainer>::getBestBidPrice() const { 
+  return bidSide_->getBBOPrice();
+}
+
+template<typename BidContainer, typename AskContainer>
+std::optional<unsigned long>
+OrderBook<BidContainer, AskContainer>::getBestBidSize() const {
+  return bidSide_->getBBOSize();
+}
+
+template<typename BidContainer, typename AskContainer>
+std::optional<long>
+OrderBook<BidContainer, AskContainer>::getBestAskPrice() const { 
+  return askSide_->getBBOPrice();
+}
+
+template<typename BidContainer, typename AskContainer>
+std::optional<unsigned long>
+OrderBook<BidContainer, AskContainer>::getBestAskSize() const {
+  return askSide_->getBBOSize();
+}
+
+template<typename BidContainer, typename AskContainer>
+std::optional<unsigned long> 
+OrderBook<BidContainer, AskContainer>::sizeAtPrice(long price, bool isBid) const {
+  return isBid ? bidSide_->sizeAtPrice(price) : askSide_->sizeAtPrice(price);
+}
+
+template<typename BidContainer, typename AskContainer>
+std::optional<long> 
+OrderBook<BidContainer, AskContainer>::getBestPrice(bool isBid) const {
+  return isBid ? getBestBidPrice() : getBestAskPrice(); 
+}
+
+template<typename BidContainer, typename AskContainer>
+std::optional<unsigned long> 
+OrderBook<BidContainer, AskContainer>::getBestSize(bool isBid) const {
+  return isBid ? getBestBidSize() : getBestAskSize();
+}
+
 
 template<typename BidContainer, typename AskContainer>
 void

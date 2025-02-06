@@ -129,40 +129,31 @@ public:
   // const std::string input_file = "GOOG_2012-06-21_34200000_57600000_message_1.csv";
 
   OrderBook();
-  OrderBook(const OrderBook& rhs) :
-    bidSide_{rhs.bidSide_},
-    askSide_{rhs.askSide_}
-  {}
-
-  OrderBook(OrderBook&& rhs) :
-    bidSide_{std::move(rhs.bidSide_)},
-    askSide_{std::move(rhs.askSide_)}
-  {}
+  OrderBook(const OrderBook&);
+  OrderBook(OrderBook&&);
 	       
   void replay(std::string);
-
-  AckTrades processUndersizedCross(const Message::eventLOBSTER&, bool);
-  AckTrades processOversizedCross(const Message::eventLOBSTER&, bool);
 
   AckTrades processEvent(const Message::eventLOBSTER& event);
   
   BookSnapshot getBook() const;
-  std::optional<long> getBestBidPrice() const { return bidSide_->getBBOPrice(); }
-  std::optional<unsigned long> getBestBidSize() const { return bidSide_->getBBOSize(); }
-  std::optional<long> getBestAskPrice() const { return askSide_->getBBOPrice(); }
-  std::optional<unsigned long> getBestAskSize() const { return askSide_->getBBOSize(); }
-  std::optional<unsigned long> sizeAtPrice(long price, bool isBid) const { 
-    return isBid ? bidSide_->sizeAtPrice(price) : askSide_->sizeAtPrice(price);
-  } 
+  std::optional<long> getBestBidPrice() const;
+  std::optional<unsigned long> getBestBidSize() const;
+  std::optional<long> getBestAskPrice() const;
+  std::optional<unsigned long> getBestAskSize() const;
+  std::optional<unsigned long> sizeAtPrice(long, bool) const;
   
-  std::optional<long> getBestPrice(bool isBid) { return isBid ? getBestBidPrice() : getBestAskPrice(); }
-  std::optional<unsigned long> getBestSize(bool isBid) { return isBid ? getBestBidSize() : getBestAskSize(); }
+  std::optional<long> getBestPrice(bool) const;
+  std::optional<unsigned long> getBestSize(bool) const; 
   
   
 private:
 
   std::unique_ptr<BookSide<BidContainer>> bidSide_;
   std::unique_ptr<BookSide<AskContainer>> askSide_;
+
+  AckTrades processUndersizedCross(const Message::eventLOBSTER&, bool);
+  AckTrades processOversizedCross(const Message::eventLOBSTER&, bool);
 
 };
 
