@@ -128,7 +128,6 @@ class Consumer {
   using OrderedMPMCq = OrderedMPMCQueue<OrderType>;
 
   // const int num_workers = std::thread::hardware_concurrency() - 1;
-  const int num_workers = 1;
 
   struct worker {
     
@@ -154,7 +153,7 @@ class Consumer {
 
 	  // Artificial delay
 	  // int delay = rand()%1000;
-	  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+	  // std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
 	  outer_->MPMCqueue_target_->enqueue(o);
 	  // sync_cout << "QUEUE 2: ENQUEUED: " << e.seqNum_ << std::endl;
@@ -169,16 +168,17 @@ class Consumer {
   };
 
 public:
-  Consumer(std::shared_ptr<SPMCInnerQ> q_source, std::shared_ptr<OrderedMPMCq> q_target) :
+  Consumer(std::shared_ptr<SPMCInnerQ> q_source, std::shared_ptr<OrderedMPMCq> q_target, int num_workers) :
     SPMCqueue_source_{q_source},
-    MPMCqueue_target_{q_target}
+    MPMCqueue_target_{q_target},
+    num_workers_{num_workers}
   {}
 					
   void consume() {
 
     // workers
     std::vector<worker> workers;
-    for (std::size_t i=0; i<num_workers; ++i) {
+    for (std::size_t i=0; i<num_workers_; ++i) {
       workers.emplace_back(this, i);
     }
 
@@ -221,6 +221,7 @@ public:
 private:
   std::shared_ptr<SPMCInnerQ> SPMCqueue_source_;
   std::shared_ptr<OrderedMPMCq> MPMCqueue_target_;
+  int num_workers_;
 };
 
 #endif

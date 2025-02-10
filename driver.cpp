@@ -7,14 +7,21 @@ enum class runtime {
 
 auto main(int argc, char **argv) -> int {
 
-  constexpr runtime mode = runtime::async;
 
+  // ORDERBOOK Functionality
   constexpr int N = 5;
   const std::string input_file = "GOOG_2012-06-21_34200000_57600000_message_1.csv";
 
   using BidContainer = ForwardListAdaptor<std::less<order>, N>;
   using AskContainer = ForwardListAdaptor<std::greater<order>, N>;
   auto orderbook = new OrderBook<BidContainer, AskContainer>{};
+
+
+  // ORDEREDQUEUE Functionality
+
+  constexpr runtime mode = runtime::async;
+  constexpr int num_first_hop_workers = 12;
+  constexpr int num_second_hop_workers = 1;
 
   using EventType = eventLOBSTER;
   using OrderType = order;
@@ -25,8 +32,8 @@ auto main(int argc, char **argv) -> int {
   std::shared_ptr<OrderedMPMCQueue<OrderType>> q_target = std::make_shared<OrderedMPMCQueue<OrderType>>();
 
   auto publisher = std::make_unique<Publisher<EventType>>(input_file, q_source);
-  auto consumer = std::make_unique<Consumer<EventType, OrderType>>(q_source, q_target);
-  auto serializer = std::make_unique<Serializer<OrderType>>(q_target);
+  auto consumer = std::make_unique<Consumer<EventType, OrderType>>(q_source, q_target, num_first_hop_workers);
+  auto serializer = std::make_unique<Serializer<OrderType>>(q_target, num_second_hop_workers);
 
   if (mode == runtime::async) {
     std::thread pub_thread{&Publisher<EventType>::publish, publisher.get()};

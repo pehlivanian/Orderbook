@@ -27,21 +27,25 @@ struct eventiterator {
   eventiterator() noexcept {}
 
   explicit eventiterator(const std::istreambuf_iterator<char>& rhs) noexcept :
-    it{rhs}
+  it{rhs},
+    end{}
   {}
 
   eventiterator(const char* buf) :
     iss{buf},
-    it{iss}
+    it{iss},
+    end{}
   {}
 
   eventiterator(eventiterator&& rhs) {
     iss = std::move(rhs.iss);
     it = std::move(rhs.it);
+    end = std::istreambuf_iterator<char>{};
   }
 
   eventiterator(const eventiterator& rhs) {
     it = rhs.it;
+    end = std::istreambuf_iterator<char>{};
   }
 
   eventiterator operator=(const eventiterator& rhs) {
@@ -53,8 +57,13 @@ struct eventiterator {
 
   // prefix
   eventiterator& operator++() noexcept {
-    ++it;
-    return *this; 
+    while (it != end && *it != '\n') {
+      ++it;
+    }
+    if (it != end) {
+      ++it;
+    }
+    return *this;
   }
 
   // postfix
@@ -138,6 +147,7 @@ struct eventiterator {
 
   std::istringstream iss;
   std::istreambuf_iterator<char> it;
+  std::istreambuf_iterator<char> end;
 
 };
 

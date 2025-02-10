@@ -15,7 +15,6 @@ class Serializer {
 public:
 
   // const int num_workers = std::thread::hardware_concurrency() - 1;
-  const int num_workers = 1;
 
   struct worker {
     
@@ -45,15 +44,16 @@ public:
 
   };
 
-  Serializer(std::shared_ptr<OrderedMPMCQueue<OrderType>> q) :
-    Serializer_q_{q}
+  Serializer(std::shared_ptr<OrderedMPMCQueue<OrderType>> q, int num_workers) :
+    Serializer_q_{q},
+    num_workers_{num_workers}
   {}
 
   void serialize() {
     
     // workers
     std::vector<worker> workers;
-    for(std::size_t i=0; i<num_workers; ++i) {
+    for(std::size_t i=0; i<num_workers_; ++i) {
       workers.emplace_back(this, i);
     }
 
@@ -92,6 +92,7 @@ public:
 
 private:
   std::shared_ptr<OrderedMPMCQueue<OrderType>> Serializer_q_;
+  int num_workers_;
 };
 
 #endif

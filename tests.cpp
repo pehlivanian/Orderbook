@@ -27,7 +27,7 @@ struct TestEvent {
   TestEvent() : seqNum_(0), data_(0), metadata_{} {}
 };
 
-/*
+
 class OrderedMPMCQueueTest : public ::testing::Test {
 protected:
     static constexpr size_t QUEUE_CAPACITY = 1024;
@@ -775,8 +775,6 @@ TEST_F(OrderedMPMCQueueTest, SparseSequenceDistribution) {
         last_seq++;
     }
 }
-
-*/
 
 class OrderBookTest : public ::testing::Test {
 protected:
