@@ -10,7 +10,7 @@ enum class runtime {
 
 void keep_promise(std::promise<void>& p, Message::order&& o) {
   UNUSED(o);
-  std::this_thread::sleep_for(100ms);
+  std::this_thread::sleep_for(10ms);
   p.set_value();
   // sync_cout << "o.seqNum_" << o.seqNum_ << std::endl;
 }
@@ -26,11 +26,8 @@ auto main(int argc, char **argv) -> int {
   constexpr std::size_t NUM_SERIALIZERS = 2;
 
   // Delay between reading from 1st SPMC queue to enqueing in ordered queue
-  constexpr auto FIRST_HOP_DELAY = 10ms;
+  constexpr auto FIRST_HOP_DELAY = 100ms;
 
-  // Delay in post-processing after dequeing from ordered queue
-  constexpr auto LAST_HOP_DELAY = 10ms;
-  
   const std::string input_file = "GOOG_2012-06-21_34200000_57600000_message_1.csv";
 
   using EventType = eventLOBSTER;
@@ -40,7 +37,7 @@ auto main(int argc, char **argv) -> int {
   using OrderedMPMCq = OrderedMPMCQueue<OrderType>;
 
   std::shared_ptr<SPMCq> q_source = std::make_shared<SPMCq>();
-  std::shared_ptr<OrderedMPMCQueue<OrderType>> q_target = std::make_shared<OrderedMPMCQueue<OrderType>>(LAST_HOP_DELAY);
+  std::shared_ptr<OrderedMPMCQueue<OrderType>> q_target = std::make_shared<OrderedMPMCQueue<OrderType>>();
 
   auto publisher = std::make_unique<Publisher<EventType>>(input_file, q_source);
   auto consumer = std::make_unique<Consumer<EventType, OrderType>>(q_source, q_target, NUM_CONSUMERS, FIRST_HOP_DELAY);
