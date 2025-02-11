@@ -11,9 +11,6 @@
 #include <ctype.h>
 #include <chrono>
 #include <atomic>
-#include <vector>
-#include <utility>
-#include <optional>
 #include <sstream>
 #include <iomanip>
 #include <syncstream>
@@ -22,24 +19,13 @@
 #include <string>
 #include <string_view>
 #include <cmath>
+#include <utility>
+#include <optional>
 #include <functional>
 #include <algorithm>
 #include <vector>
 
 #include <boost/filesystem.hpp>
-
-namespace Book {
-  struct PriceLevel {
-    long price_;
-    unsigned long size_;
-    std::size_t orderCount_;
-  };
-
-  struct BookSnapshot {
-    std::vector<PriceLevel> bids;
-    std::vector<PriceLevel> asks;
-  };
-}
 
 namespace Numerics {
 
@@ -61,6 +47,19 @@ namespace Numerics {
 
 }
 
+namespace Book {
+  struct PriceLevel {
+    long price_;
+    unsigned long size_;
+    std::size_t orderCount_;
+  };
+
+  struct BookSnapshot {
+    std::vector<PriceLevel> bids;
+    std::vector<PriceLevel> asks;
+  };
+
+} // namespace Book
 
 namespace Message {
 
@@ -80,38 +79,39 @@ namespace Message {
     unsigned long size_;
   };
 
-struct order {   
-  unsigned long seqNum_;
-  char side_;
-  double time_;
-  unsigned long orderId_;
-  long price_;
-  unsigned long size_;
-  
-  bool operator==(const Message::order& rhs) {
-    return (side_ == rhs.side_) && (fabs(price_ - rhs.price_) < std::numeric_limits<double>::epsilon());
+  struct order {   
+    unsigned long seqNum_;
+    char side_;
+    double time_;
+    unsigned long orderId_;
+    long price_;
+    unsigned long size_;
+    
+    bool operator==(const Message::order& rhs) {
+      return (side_ == rhs.side_) && (fabs(price_ - rhs.price_) < std::numeric_limits<double>::epsilon());
     }
-};
-
-struct event {
-  unsigned long seqNum;
-  char msgType;
-  char side;
-  int level;
-  long price;
-  unsigned long size;    
-};
-
-struct eventLOBSTER {
-  unsigned long seqNum_;
-  double time_;
-  short eventType_;
-  unsigned long orderId_;
-  unsigned size_;
-  long price_;
-  char direction_;
-};
-
+    
+  };
+  
+  struct event {
+    unsigned long seqNum;
+    char msgType;
+    char side;
+    int level;
+    long price;
+    unsigned long size;    
+  };
+  
+  struct eventLOBSTER {
+    unsigned long seqNum_;
+    double time_;
+    short eventType_;
+    unsigned long orderId_;
+    unsigned size_;
+    long price_;
+    char direction_;
+  };
+  
   using TradesType = std::vector<trade>;
   using AckTrades = std::pair<ack, std::optional<TradesType>>;
 

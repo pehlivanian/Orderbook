@@ -42,6 +42,11 @@ add_library(orderbook OBJECT orderbook.cpp)
 # DRIVER
 ########
 add_executable(driver driver.cpp)
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  target_compile_options(driver PRIVATE
+    -fdiagnostics-show-template-tree
+  )
+endif()
 target_compile_definitions(driver PUBLIC -DCXX_FILESYSTEM_HEADER=<boost/filesystem.hpp>)
 target_compile_definitions(driver PUBLIC -DCXX_FILESYSTEM_NAMESPACE=boost::filesystem)
 target_link_libraries(driver PUBLIC Boost::filesystem pthread)

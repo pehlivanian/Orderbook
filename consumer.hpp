@@ -127,8 +127,6 @@ class Consumer {
   using SPMCInnerQ = moodycamel::ConcurrentQueue<EventType>;
   using OrderedMPMCq = OrderedMPMCQueue<OrderType>;
 
-  // const int num_workers = std::thread::hardware_concurrency() - 1;
-
   struct worker {
     
     // the worker will take the event from the SPMC queue
@@ -152,8 +150,7 @@ class Consumer {
 	  auto o = eventLOBSTERToOrder(e);
 
 	  // Artificial delay
-	  // int delay = rand()%1000;
-	  // std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+	  std::this_thread::sleep_for(std::chrono::milliseconds(outer_->processing_time_));
 
 	  outer_->MPMCqueue_target_->enqueue(o);
 	  // sync_cout << "QUEUE 2: ENQUEUED: " << e.seqNum_ << std::endl;
@@ -168,10 +165,21 @@ class Consumer {
   };
 
 public:
-  Consumer(std::shared_ptr<SPMCInnerQ> q_source, std::shared_ptr<OrderedMPMCq> q_target, int num_workers) :
+  Consumer(std::shared_ptr<SPMCInnerQ> q_source, std::shared_ptr<OrderedMPMCq> q_target) :
     SPMCqueue_source_{q_source},
     MPMCqueue_target_{q_target},
-    num_workers_{num_workers}
+    num_workers_{1},
+    processing_time_{0ms}
+  {}
+
+  Consumer(std::shared_ptr<SPMCInnerQ> q_source, 
+	   std::shared_ptr<OrderedMPMCq> q_target, 
+	   std::size_t num_workers,
+	   std::chrono::milliseconds millis=0ms) :
+    SPMCqueue_source_{q_source},
+    MPMCqueue_target_{q_target},
+    num_workers_{num_workers},
+    processing_time_{millis}
   {}
 					
   void consume() {
@@ -221,7 +229,9 @@ public:
 private:
   std::shared_ptr<SPMCInnerQ> SPMCqueue_source_;
   std::shared_ptr<OrderedMPMCq> MPMCqueue_target_;
-  int num_workers_;
+
+  std::size_t num_workers_;
+  std::chrono::milliseconds processing_time_;
 };
 
 #endif
