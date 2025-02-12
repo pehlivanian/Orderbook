@@ -776,6 +776,79 @@ TEST_F(OrderedMPMCQueueTest, SparseSequenceDistribution) {
     }
 }
 
+// Test 11: Verify Dequeue Ordering with Multiple Workers
+TEST_F(OrderedMPMCQueueTest, MultiWorkerDequeueOrdering) {
+    static constexpr size_t NUM_EVENTS = 1000;
+    static constexpr size_t NUM_WORKERS = 3;
+    
+    // First enqueue all events
+    for (size_t i = 0; i < NUM_EVENTS; ++i) {
+        ASSERT_TRUE(queue.try_enqueue(TestEvent(i, i)));
+    }
+
+    std::atomic<bool> start{false};
+    std::atomic<bool> stop{false};
+    std::vector<std::thread> workers;
+    
+    // Create multiple worker threads
+    for (size_t i = 0; i < NUM_WORKERS; ++i) {
+        workers.emplace_back([this, &start, &stop]() {
+            // Wait for all threads to be ready
+            while (!start.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            
+            while (!stop.load(std::memory_order_acquire)) {
+                TestEvent event;
+                if (this->queue.try_dequeue_p(event)) {
+                    // Process event
+                    std::this_thread::sleep_for(std::chrono::microseconds(1));
+                    this->queue.mark_processed(event.seqNum_);
+                    
+                    // If we processed the last event, signal all threads to stop
+                    if (event.seqNum_ == NUM_EVENTS - 1) {
+                        stop.store(true, std::memory_order_release);
+                        break;
+                    }
+                }
+                std::this_thread::yield();  // Add yield to prevent tight spinning
+            }
+        });
+    }
+
+    // Start all workers simultaneously
+    start.store(true, std::memory_order_release);
+
+    // Wait for all workers to complete
+    for (auto& worker : workers) {
+        worker.join();
+    }
+    
+    // Verify dequeue order
+    auto dequeue_order = queue.get_dequeue_order();
+    ASSERT_EQ(dequeue_order.size(), NUM_EVENTS);
+    
+    // Check that events were dequeued in sequence
+    for (size_t i = 0; i < NUM_EVENTS; ++i) {
+        EXPECT_EQ(dequeue_order[i], i) 
+            << "Event out of order at position " << i 
+            << ": expected " << i 
+            << " but got " << dequeue_order[i];
+    }
+
+    // Processing order may differ, but should contain all events
+    auto process_order = queue.get_process_order();
+    ASSERT_EQ(process_order.size(), NUM_EVENTS);
+    
+    // Sort the processing order and verify all events were processed
+    std::vector<size_t> sorted_process_order = process_order;
+    std::sort(sorted_process_order.begin(), sorted_process_order.end());
+    for (size_t i = 0; i < NUM_EVENTS; ++i) {
+        EXPECT_EQ(sorted_process_order[i], i)
+            << "Missing event " << i << " in process order";
+    }
+}
+
 class OrderBookTest : public ::testing::Test {
 protected:
     static constexpr int N = 5;

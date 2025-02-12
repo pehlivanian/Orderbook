@@ -41,8 +41,6 @@ private:
     std::atomic<EventType*> event{nullptr};
     std::atomic<bool> ready{false};
     std::atomic<bool> processed{false};
-    std::mutex mutex;
-    std::condition_variable cv;
   };
 
   static constexpr size_t CACHE_LINE_SIZE = 64;
@@ -51,11 +49,19 @@ private:
   alignas(CACHE_LINE_SIZE) std::atomic<size_t> writeCount_{0};
   alignas(CACHE_LINE_SIZE) std::atomic<size_t> nextToConsume_{0};
 
+  // Track dequeue order separately from processing order
+  mutable std::mutex dequeue_mut;
+  std::vector<std::size_t> dequeue_order_;
+  
+  // Track processing completion order
+  mutable std::mutex process_mut;
+  std::vector<std::size_t> process_order_;
+
   size_t getIndex(size_t seqNum) const {
     return seqNum & MASK;
   }
 
-  std::mutex vector_mut;
+  mutable std::mutex vector_mut;
   std::vector<std::size_t> local_processed_ = std::vector<std::size_t>{};
 
 public:
@@ -162,34 +168,32 @@ public:
     
     Node& node = buffer_[idx];
 
-    // Wait for previous node to be processed if it exists
-    if (currentReadSeqNum > 0) {
-      size_t prevIdx = getIndex(currentReadSeqNum - 1);
-      Node& prevNode = buffer_[prevIdx];
-      
-      {
-	std::unique_lock<std::mutex> lock(prevNode.mutex);
-	prevNode.cv.wait(lock, [&prevNode] { 
-			   return prevNode.processed.load(std::memory_order_acquire); 
-			 });
-      }
+    // First verify all previous nodes are processed
+    for (size_t i = 0; i < currentReadSeqNum; ++i) {
+        size_t prevIdx = getIndex(i);
+        Node& prevNode = buffer_[prevIdx];
+        if (!prevNode.processed.load(std::memory_order_acquire)) {
+            return false;
+        }
     }
 
     if (!node.ready.load(std::memory_order_acquire)) {
-      return false;
+        return false;
     }
 
     EventType* evt = node.event.load(std::memory_order_acquire);
     if (!evt || evt->seqNum_ != currentReadSeqNum) {
-      return false;
+        return false;
     }
 
+    // Try to atomically claim this node for dequeuing
     bool expected = false;
     if (!node.processed.compare_exchange_strong(expected, true,
-						std::memory_order_acq_rel)) {
-      return false;
+                                             std::memory_order_acq_rel)) {
+        return false;
     }
 
+    // Only increment nextToConsume_ if we successfully claimed the node
     nextToConsume_.fetch_add(1, std::memory_order_release);        
     node.ready.store(false, std::memory_order_release);
     
@@ -197,24 +201,27 @@ public:
     delete evt;
     node.event.store(nullptr, std::memory_order_release);
 
-#ifdef DEBUG
-    sync_cout << "DEQUEUED: " << currentReadSeqNum << std::endl;
-#endif
+    // Record dequeue order
+    {
+        std::lock_guard<std::mutex> lock(dequeue_mut);
+        dequeue_order_.push_back(currentReadSeqNum);
+    }
 
     return true;
   }
 
-  // Called by the task processor when it has finished processing the task
   void mark_processed(size_t seqNum) {
     const size_t idx = getIndex(seqNum);
     Node& node = buffer_[idx];
     
-    // Notify waiting consumers that this task is complete
-    std::lock_guard<std::mutex> lock(vector_mut);
-    local_processed_.push_back(seqNum);
-    node.cv.notify_all();
+    // Record processing completion order
+    {
+      std::lock_guard<std::mutex> lock(process_mut);
+      process_order_.push_back(seqNum);
+    }
 
-    // sync_cout << "MARKED: " << seqNum << std::endl;
+    // Mark this node as processed
+    node.processed.store(true, std::memory_order_release);
   }
 
   bool empty() const {
@@ -234,8 +241,27 @@ public:
   }
 
   void replay() const {
-    std::copy(local_processed_.begin(), local_processed_.end(), std::ostream_iterator<std::size_t>(std::cout, "\n"));
+    std::cout << "Dequeue order:\n";
+    std::copy(dequeue_order_.begin(), dequeue_order_.end(), 
+              std::ostream_iterator<std::size_t>(std::cout, "\n"));
+    
+    std::cout << "\nProcessing completion order:\n";
+    std::copy(process_order_.begin(), process_order_.end(), 
+              std::ostream_iterator<std::size_t>(std::cout, "\n"));
+    
     std::cout << std::endl;
+  }
+
+  // Get the order in which events were dequeued
+  std::vector<std::size_t> get_dequeue_order() const {
+    std::lock_guard<std::mutex> lock(dequeue_mut);
+    return dequeue_order_;
+  }
+
+  // Get the order in which events were processed
+  std::vector<std::size_t> get_process_order() const {
+    std::lock_guard<std::mutex> lock(process_mut);
+    return process_order_;
   }
 };
 

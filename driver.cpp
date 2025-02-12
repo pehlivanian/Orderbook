@@ -25,7 +25,7 @@ auto main(int argc, char **argv) -> int {
   constexpr std::size_t NUM_CONSUMERS = 12;
 
   // Number of workers moving off from OrderedMPMCQueue -> terminus
-  constexpr std::size_t NUM_SERIALIZERS = 3;
+  constexpr std::size_t NUM_SERIALIZERS = 2;
 
   // Delay between reading from 1st SPMC queue to enqueing in ordered queue
   constexpr auto FIRST_HOP_DELAY = 100ms;
