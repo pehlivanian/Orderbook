@@ -779,7 +779,7 @@ TEST_F(OrderedMPMCQueueTest, SparseSequenceDistribution) {
 // Test 11: Verify Dequeue Ordering with Multiple Workers
 TEST_F(OrderedMPMCQueueTest, MultiWorkerDequeueOrdering) {
     static constexpr size_t NUM_EVENTS = 1000;
-    static constexpr size_t NUM_WORKERS = 3;
+    static constexpr size_t NUM_WORKERS = 4;
     
     // First enqueue all events
     for (size_t i = 0; i < NUM_EVENTS; ++i) {

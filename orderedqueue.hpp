@@ -163,7 +163,7 @@ public:
   }
 
   bool try_dequeue_p(EventType& event) {
-    size_t currentReadSeqNum = nextToConsume_.load(std::memory_order_relaxed);
+    size_t currentReadSeqNum = nextToConsume_.load(std::memory_order_acquire);
     const size_t idx = getIndex(currentReadSeqNum);
     
     Node& node = buffer_[idx];
@@ -177,6 +177,15 @@ public:
         }
     }
 
+    // Try to atomically increment nextToConsume_ to claim this sequence number
+    size_t expected = currentReadSeqNum;
+    if (!nextToConsume_.compare_exchange_strong(expected, currentReadSeqNum + 1,
+                                              std::memory_order_acq_rel,
+                                              std::memory_order_acquire)) {
+        return false;  // Another thread claimed this sequence number
+    }
+
+    // We've claimed this sequence number, now we can safely process it
     if (!node.ready.load(std::memory_order_acquire)) {
         return false;
     }
@@ -186,20 +195,11 @@ public:
         return false;
     }
 
-    // Try to atomically claim this node for dequeuing
-    bool expected = false;
-    if (!node.processed.compare_exchange_strong(expected, true,
-                                             std::memory_order_acq_rel)) {
-        return false;
-    }
-
-    // Only increment nextToConsume_ if we successfully claimed the node
-    nextToConsume_.fetch_add(1, std::memory_order_release);        
-    node.ready.store(false, std::memory_order_release);
-    
+    // Move the event data
     event = std::move(*evt);
     delete evt;
     node.event.store(nullptr, std::memory_order_release);
+    node.ready.store(false, std::memory_order_release);
 
     // Record dequeue order
     {
