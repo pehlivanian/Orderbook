@@ -168,13 +168,15 @@ public:
     
     Node& node = buffer_[idx];
 
-    // First verify all previous nodes are processed
+    // Previous node must be processed
+    if (currentReadSeqNum > 0) {
     for (size_t i = 0; i < currentReadSeqNum; ++i) {
         size_t prevIdx = getIndex(i);
         Node& prevNode = buffer_[prevIdx];
         if (!prevNode.processed.load(std::memory_order_acquire)) {
             return false;
         }
+    }
     }
 
     // Try to atomically increment nextToConsume_ to claim this sequence number
