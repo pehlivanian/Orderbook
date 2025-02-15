@@ -849,6 +849,104 @@ TEST_F(OrderedMPMCQueueTest, MultiWorkerDequeueOrdering) {
     }
 }
 
+
+// Test 12: Multiple Publishers and Consumers with Random Delays
+TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
+    static constexpr size_t NUM_PUBLISHERS = 4;
+    static constexpr size_t NUM_CONSUMERS = 4;
+    static constexpr size_t EVENTS_PER_PUBLISHER = 100;
+    static constexpr size_t TOTAL_EVENTS = NUM_PUBLISHERS * EVENTS_PER_PUBLISHER;
+    
+    std::atomic<bool> start{false};
+    std::atomic<bool> stop{false};
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> delay_dist(0, 10); // 0-10ms delay
+
+    // Start publishers
+    std::vector<std::thread> publishers;
+    for (size_t p = 0; p < NUM_PUBLISHERS; ++p) {
+        publishers.emplace_back([&, p]() {
+            // Wait for start signal
+            while (!start.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            
+            for (size_t i = 0; i < EVENTS_PER_PUBLISHER; ++i) {
+                size_t seq = p * EVENTS_PER_PUBLISHER + i;
+                // Random delay before enqueueing
+                std::this_thread::sleep_for(std::chrono::milliseconds(delay_dist(gen)));
+                while (!queue.try_enqueue(TestEvent(seq, seq))) { ;}
+                sync_cout << "Published event " << seq << std::endl;
+            }
+        });
+    }
+
+    // Start consumers
+    std::vector<std::thread> consumers;
+    for (size_t c = 0; c < NUM_CONSUMERS; ++c) {
+        consumers.emplace_back([&]() {
+            // Wait for start signal
+            while (!start.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            
+            while (!stop.load(std::memory_order_acquire)) {
+                TestEvent event;
+                // sync_cout << "Attempting to dequeue" << std::endl;
+                if (queue.try_dequeue_p(event)) {
+                    // sync_cout << "Dequeued event " << event.seqNum_ << std::endl;
+                    // Random delay before processing
+                    std::this_thread::sleep_for(std::chrono::milliseconds(delay_dist(gen)));
+                    queue.mark_processed(event.seqNum_);
+                    
+                    // If we processed the last event, signal all threads to stop
+                    if (event.seqNum_ == TOTAL_EVENTS - 1) {
+                        stop.store(true, std::memory_order_release);
+                    }
+                }
+                std::this_thread::yield();
+            }
+        });
+    }
+
+    // Start all threads simultaneously
+    start.store(true, std::memory_order_release);
+
+    // Wait for completion
+    for (auto& pub : publishers) {
+        pub.join();
+    }
+    for (auto& con : consumers) {
+        con.join();
+    }
+
+    // Verify dequeue order
+    auto dequeue_order = queue.get_dequeue_order();
+    ASSERT_EQ(dequeue_order.size(), TOTAL_EVENTS);
+    
+    // Check that events were dequeued in sequence
+    for (size_t i = 0; i < TOTAL_EVENTS; ++i) {
+        EXPECT_EQ(dequeue_order[i], i) 
+            << "Event out of order at position " << i 
+            << ": expected " << i 
+            << " but got " << dequeue_order[i];
+    }
+
+    // Verify process order contains all events
+    auto process_order = queue.get_process_order();
+    ASSERT_EQ(process_order.size(), TOTAL_EVENTS);
+    
+    // Sort and verify all events were processed
+    std::vector<size_t> sorted_process_order = process_order;
+    std::sort(sorted_process_order.begin(), sorted_process_order.end());
+    for (size_t i = 0; i < TOTAL_EVENTS; ++i) {
+        EXPECT_EQ(sorted_process_order[i], i)
+            << "Missing event " << i << " in process order";
+    }
+}
+
+
 class OrderBookTest : public ::testing::Test {
 protected:
     static constexpr int N = 5;
