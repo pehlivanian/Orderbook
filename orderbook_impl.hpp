@@ -93,6 +93,7 @@ template<typename BidContainer, typename AskContainer>
 void
 OrderBook<BidContainer, AskContainer>::replay(std::string input_file) {
 
+
   namespace ranges = std::ranges;
   namespace views = std::views;
 
@@ -102,7 +103,7 @@ OrderBook<BidContainer, AskContainer>::replay(std::string input_file) {
   auto eventstream = EventStream(path.string());
 
   for (auto e : eventstream)
-    std::cout << e << std::endl;
+    std::cout << "From replay: " << e << std::endl;
 
 }
 

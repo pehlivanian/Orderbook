@@ -46,7 +46,7 @@ public:
         }
       }
 
-      outer_->Serializer_q_->replay();
+      // outer_->Serializer_q_->replay();
       exit(0);
     }
 

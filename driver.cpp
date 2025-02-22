@@ -12,7 +12,7 @@ enum class runtime {
 void process_order(Message::order&& o) {
   UNUSED(o);
   std::this_thread::sleep_for(10ms);
-  // sync_cout << "Processed order: " << o.seqNum_ << std::endl;
+  sync_cout << "Processed order: " << o.seqNum_ << std::endl;
 }
 
 auto main(int argc, char **argv) -> int {
@@ -22,10 +22,10 @@ auto main(int argc, char **argv) -> int {
   constexpr runtime mode = runtime::async;
 
   // Number of workers moving from SPMCQueue -> OrderedMPMCQueue
-  constexpr std::size_t NUM_CONSUMERS = 12;
+  constexpr std::size_t NUM_CONSUMERS = 24;
 
   // Number of workers moving off from OrderedMPMCQueue -> terminus
-  constexpr std::size_t NUM_SERIALIZERS = 2;
+  constexpr std::size_t NUM_SERIALIZERS = 4;
 
   // Delay between reading from 1st SPMC queue to enqueing in ordered queue
   constexpr auto FIRST_HOP_DELAY = 100ms;
