@@ -849,7 +849,6 @@ TEST_F(OrderedMPMCQueueTest, MultiWorkerDequeueOrdering) {
     }
 }
 
-
 // Test 12: Multiple Publishers and Consumers with Random Delays
 TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
     static constexpr size_t NUM_PUBLISHERS = 4;
@@ -877,7 +876,6 @@ TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
                 // Random delay before enqueueing
                 std::this_thread::sleep_for(std::chrono::milliseconds(delay_dist(gen)));
                 while (!queue.try_enqueue(TestEvent(seq, seq))) { ;}
-                sync_cout << "Published event " << seq << std::endl;
             }
         });
     }

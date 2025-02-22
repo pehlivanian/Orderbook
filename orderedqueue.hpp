@@ -166,7 +166,7 @@ public:
     size_t currentReadSeqNum = nextToConsume_.load(std::memory_order_acquire);
     const size_t idx = getIndex(currentReadSeqNum);
 
-    sync_cout << "Trying to dequeue sequence number " << currentReadSeqNum << std::endl;  
+    // sync_cout << "Trying to dequeue sequence number " << currentReadSeqNum << std::endl;  
     
     Node& node = buffer_[idx];
 
@@ -176,7 +176,7 @@ public:
         size_t prevIdx = getIndex(currentReadSeqNum - 1);
         Node& prevNode = buffer_[prevIdx];
         if (!prevNode.processed.load(std::memory_order_acquire)) {
-            sync_cout << "Previous node is not processed" << std::endl;
+	  // sync_cout << "Previous node is not processed" << std::endl;
             return false;
         }
     }
@@ -186,11 +186,11 @@ public:
     if (!nextToConsume_.compare_exchange_strong(expected, currentReadSeqNum + 1,
                                               std::memory_order_acq_rel,
                                               std::memory_order_acquire)) {
-        sync_cout << "Failed to claim sequence number " << currentReadSeqNum << std::endl;
+      // sync_cout << "Failed to claim sequence number " << currentReadSeqNum << std::endl;
         return false;
     }
 
-    sync_cout << "Set nextToConsume_ to " << currentReadSeqNum + 1 << std::endl;
+    // sync_cout << "Set nextToConsume_ to " << currentReadSeqNum + 1 << std::endl;
 
     // If we fail after this point, we need to roll back nextToConsume_
     // I think this works; any other thread that comes in and is looking
@@ -198,29 +198,35 @@ public:
     // previous check.
     bool success = false;
     auto rollback = [&](void*) {
-        sync_cout << "RAII guard destructor called for seqNum " << currentReadSeqNum << std::endl;
+      // sync_cout << "RAII guard destructor called for seqNum " << currentReadSeqNum << std::endl;
         if (!success) {
-            sync_cout << "Rolling back nextToConsume_ to " << currentReadSeqNum << std::endl;
+	  // sync_cout << "Rolling back nextToConsume_ to " << currentReadSeqNum << std::endl;
             nextToConsume_.store(currentReadSeqNum, std::memory_order_release);
         } else {
-            sync_cout << "No rollback needed - operation was successful" << std::endl;
+	  // sync_cout << "No rollback needed - operation was successful" << std::endl;
         }
     };
     auto guard = std::unique_ptr<void, decltype(rollback)>(nullptr, rollback);
 
     // We've claimed this sequence number, now we can safely process it
     if (!node.ready.load(std::memory_order_acquire)) {
-        sync_cout << "Node is not ready" << std::endl;
+      // sync_cout << "Node is not ready" << std::endl;
+      //sync_cout << "Rolling back nextToConsume_ to " << currentReadSeqNum << std::endl;
+      nextToConsume_.store(currentReadSeqNum, std::memory_order_release);
+
         return false;
     }
 
     EventType* evt = node.event.load(std::memory_order_acquire);
     if (!evt || evt->seqNum_ != currentReadSeqNum) {
-        sync_cout << "Event is not the correct sequence number" << std::endl;
+      // sync_cout << "Event is not the correct sequence number" << std::endl;
+      // sync_cout << "Rolling back nextToConsume_ to " << currentReadSeqNum << std::endl;
+	nextToConsume_.store(currentReadSeqNum, std::memory_order_release);
+	
         return false;
     }
 
-    sync_cout << "Event is the correct sequence number" << std::endl;
+    // sync_cout << "Event is the correct sequence number" << std::endl;
 
     // Move the event data
     event = std::move(*evt);
