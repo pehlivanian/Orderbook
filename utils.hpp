@@ -86,6 +86,7 @@ namespace Message {
     unsigned long orderId_;
     long price_;
     unsigned long size_;
+    short orderType_;
     
     bool operator==(const Message::order& rhs) {
       return (side_ == rhs.side_) && (fabs(price_ - rhs.price_) < std::numeric_limits<double>::epsilon());
@@ -120,7 +121,7 @@ namespace Message {
 namespace Utils {
 
   Message::order eventLOBSTERToOrder(const Message::eventLOBSTER& e) {
-    return Message::order{e.seqNum_, e.direction_, e.time_, e.orderId_, e.price_, e.size_};
+    return Message::order{e.seqNum_, e.direction_, e.time_, e.orderId_, e.price_, e.size_, e.eventType_};
   }
 
   void ltrim(std::string& s) {
@@ -191,11 +192,12 @@ namespace Utils {
 
   std::osyncstream& operator<<(std::osyncstream& os, const Message::order& o) {
     os << "{ "
-       << o.seqNum_ << ", "
-       << o.time_   << ", "
-       << o.side_   << ", "
-       << o.price_  << ", "
-       << o.size_   << "}";
+       << o.seqNum_    << ", "
+       << o.time_      << ", "
+       << o.side_      << ", "
+       << o.price_     << ", "
+       << o.size_      << ", "
+       << o.orderType_ << "}";
     return os;
   }
 

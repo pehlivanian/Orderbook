@@ -134,6 +134,7 @@ public:
 	       
   void replay(std::string);
 
+  AckTrades processEvent(const Message::order& order);
   AckTrades processEvent(const Message::eventLOBSTER& event);
   
   BookSnapshot getBook() const;
@@ -152,6 +153,11 @@ private:
   std::unique_ptr<BookSide<BidContainer>> bidSide_;
   std::unique_ptr<BookSide<AskContainer>> askSide_;
 
+  bool _crossedBook(const Message::order&);
+  bool _undersizedCross(const Message::order&);
+  
+  AckTrades processUndersizedCross(const Message::order&, bool);
+  AckTrades processOversizedCross(const Message::order&, bool);
   AckTrades processUndersizedCross(const Message::eventLOBSTER&, bool);
   AckTrades processOversizedCross(const Message::eventLOBSTER&, bool);
 

@@ -115,6 +115,21 @@ OrderBook<BidContainer, AskContainer>::getBook() const {
 
 template<typename BidContainer, typename AskContainer>
 AckTrades
+OrderBook<BidContainer, AskContainer>::processUndersizedCross(const Message::order& order_, bool isBid) {
+
+  auto tradeOrder = order{order_};
+  tradeOrder.orderType_ = 4;
+  tradeOrder.side_ = isBid ? 'S' : 'B';
+  
+  if (isBid) {
+    return askSide_->processEvent(tradeOrder, 0, 'E');
+  } else {
+    return bidSide_->processEvent(tradeOrder, 0, 'E');
+  }
+}
+
+template<typename BidContainer, typename AskContainer>
+AckTrades
 OrderBook<BidContainer, AskContainer>::processUndersizedCross(const Message::eventLOBSTER& event,
 							      bool isBid) {
   auto tradeEvent = eventLOBSTER{event};
@@ -131,6 +146,74 @@ OrderBook<BidContainer, AskContainer>::processUndersizedCross(const Message::eve
 
 }
 
+template<typename BidContainer, typename AskContainer>
+AckTrades
+OrderBook<BidContainer, AskContainer>::processOversizedCross(const Message::order& order_,
+							     bool isBid) {
+
+  AckTrades res1, res2;
+  
+  unsigned remainder = order_.size_;
+  TradesType allTrades;
+
+  using SideType = std::variant<std::reference_wrapper<BookSide<BidContainer>>, std::reference_wrapper<BookSide<AskContainer>>>;
+  using CompType = std::variant<typename BidContainer::CompareLong, typename AskContainer::CompareLong>;
+
+  SideType execSide = isBid ? static_cast<SideType>(std::ref(*askSide_)) : static_cast<SideType>(std::ref(*bidSide_));
+  SideType orderSide = isBid ? static_cast<SideType>(std::ref(*bidSide_)) : static_cast<SideType>(std::ref(*askSide_));
+  CompType comparer = isBid ? static_cast<CompType>(typename AskContainer::CompareLong()) : static_cast<CompType>(typename BidContainer::CompareLong());
+
+  while (!std::visit([&order_, &execSide](auto& comp)
+		     { 
+		       return comp(order_.price_, std::visit([](auto& side)
+							    { 
+							      return *(side.get().getBBOPrice()); 
+							    }, 
+							    execSide)
+				   ); 
+		     }, comparer) && remainder) {
+    
+    auto tradeOrder = Message::order{order_};
+    
+    unsigned bookSize = std::visit([](auto& side){ return *(side.get().getBBOSize()); }, execSide);
+    unsigned tradeSize = bookSize > remainder ? remainder : bookSize;
+    
+    if (tradeSize) {
+      tradeOrder.orderType_ = 4;
+      tradeOrder.side_ = isBid? 'S' : 'B';
+      tradeOrder.size_ = tradeSize;
+      
+      res1 = std::visit([&tradeOrder](auto& side){ return side.get().processEvent(tradeOrder, 0, 'E'); }, execSide);
+      // res1 = execSide->processEvent(tradeOrder, 0, 'E');
+      for (auto & trade : *res1.second)
+	allTrades.push_back(trade);
+      
+      // Inside has been executed against
+      remainder -= tradeSize;
+
+    } 
+    else {
+      remainder = 0;
+    }
+  }
+  
+  // Now remainder of order is smaller than current BBO size
+  
+  // Post order
+  
+  if (remainder) {
+    
+    auto remainderOrder = Message::order{order_};
+    remainderOrder.size_ = remainder;
+
+    res2 = std::visit([&remainderOrder](auto& side){ return side.get().processEvent(remainderOrder, 0, 'I'); }, orderSide);
+    // res2 = bidSide_->processEvent(remainderOrder, 0, 'I');
+    return {res2.first, allTrades};
+  }
+
+  return {res1.first, allTrades};
+  
+}
 
 
 template<typename BidContainer, typename AskContainer>
@@ -218,6 +301,68 @@ OrderBook<BidContainer, AskContainer>::processOversizedCross(const Message::even
   }
 
   return {res1.first, allTrades};
+}
+
+template<typename BidContainer, typename AskContainer>
+AckTrades
+OrderBook<BidContainer, AskContainer>::processEvent(const Message::order& order) {
+  
+  char orderType;
+  switch(order.orderType_) {
+  case 1: orderType = 'I'; break; // Add order
+  case 2: orderType = 'D'; break; // Cancel order
+  case 3: orderType = 'D'; break; // Delete order
+  case 4: orderType = 'E'; break; // Execute order
+  case 5: orderType = 'U'; break; // Update order
+  default:
+    std::cerr << "Unknown order type: " << order.orderType_ << std::endl;
+    return { ack{}, std::nullopt};
+  }
+
+  if (order.side_ == 'B') {
+    if (orderType == 'I') {
+      if (_crossedBook(order)) {
+	if (_undersizedCross(order)) {
+	  return processUndersizedCross(order, true);
+	} else {
+	  return processOversizedCross(order, true);
+	}
+    } else {
+	return bidSide_->processEvent(order, 0, orderType);
+      }
+    } else {
+      return bidSide_->processEvent(order, 0, orderType);
+    }
+  } else if (order.side_ == 'S') {
+      if (orderType == 'I') {
+	if (_crossedBook(order)) {
+	  if (_undersizedCross(order)) {
+	    return processUndersizedCross(order, false);
+	  } else {
+	    return processOversizedCross(order, false);
+	  }
+      } else {
+	return askSide_->processEvent(order, 0, orderType);
+      }
+      } else {
+	return askSide_->processEvent(order, 0, orderType);
+      }
+  }
+  
+}
+
+template<typename BidContainer, typename AskContainer>
+bool
+OrderBook<BidContainer, AskContainer>::_crossedBook(const Message::order& order) {
+  return ((order.side_ == 'B') && (order.price_ >= askSide_->getBBOPrice())) ||
+    ((order.side_ == 'S') && (order.price_ <= bidSide_->getBBoPrice()));
+}
+
+template<typename BidContainer, typename AskContainer>
+bool
+OrderBook<BidContainer, AskContainer>::_undersizedCross(const Message::order& order) {
+  if (((order.side_ == 'B') && (order.size_ <= askSide_->getBBOSize())) || 
+      ((order.side_ == 'S') && (order.size_ <= bidSide_->getBBOSize())));
 }
 
 template<typename BidContainer, typename AskContainer>

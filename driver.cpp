@@ -28,7 +28,7 @@ auto main(int argc, char **argv) -> int {
   constexpr std::size_t NUM_SERIALIZERS = 4;
 
   // Delay between reading from 1st SPMC queue to enqueing in ordered queue
-  constexpr auto FIRST_HOP_DELAY = 100ms;
+  constexpr auto FIRST_HOP_DELAY = 10ms;
 
   // const std::string input_file = "GOOG_2012-06-21_34200000_57600000_message_1.csv";
   const std::string input_file = "GOOG_message_short.csv";
