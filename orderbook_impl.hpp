@@ -305,7 +305,7 @@ OrderBook<BidContainer, AskContainer>::processOversizedCross(const Message::even
 
 template<typename BidContainer, typename AskContainer>
 AckTrades
-OrderBook<BidContainer, AskContainer>::processEvent(const Message::order& order) {
+OrderBook<BidContainer, AskContainer>::processOrder(const Message::order& order) {
   
   char orderType;
   switch(order.orderType_) {
@@ -365,6 +365,21 @@ OrderBook<BidContainer, AskContainer>::_undersizedCross(const Message::order& or
       ((order.side_ == 'S') && (order.size_ <= bidSide_->getBBOSize())));
 }
 
+
+template<typename BidContainer, typename AskContainer>
+bool
+OrderBook<BidContainer, AskContainer>::_crossedBook(const Message::eventLOBSTER& event) {
+  return ((event.direction_ == 'B') && (event.price_ >= askSide_->getBBOPrice())) ||
+    ((event.direction_ == 'S') && (event.price_ <= bidSide_->getBBOPrice()));  
+}
+
+template<typename BidContainer, typename AskContainer>
+bool
+OrderBook<BidContainer, AskContainer>::_undersizedCross(const Message::eventLOBSTER& event) {
+  return (((event.direction_ == 'B') && (event.size_ <= askSide_->getBBOSize())) || 
+      ((event.direction_ == 'S') && (event.size_ <= bidSide_->getBBOSize())));
+}
+
 template<typename BidContainer, typename AskContainer>
 AckTrades
 OrderBook<BidContainer, AskContainer>::processEvent(const Message::eventLOBSTER& event) {
@@ -387,13 +402,10 @@ OrderBook<BidContainer, AskContainer>::processEvent(const Message::eventLOBSTER&
     // Route to appropriate side
     if (event.direction_ == 'B') {
       if (msgType == 'I') {
-	if (auto bbo = askSide_->getBBOPrice(); bbo && event.price_ >= *bbo) {
-	  if (event.size_ <= askSide_->getBBOSize()) {
-
+	if (_crossedBook(event)) {
+	  if (_undersizedCross(event)) {
 	    return processUndersizedCross(event, true);
-
 	  } else {
-
 	    return processOversizedCross(event, true);
 	  }
 	} else {
@@ -405,15 +417,11 @@ OrderBook<BidContainer, AskContainer>::processEvent(const Message::eventLOBSTER&
       }
     } else if (event.direction_ == 'S') {
       if (msgType == 'I') {
-	if (auto bbo = bidSide_->getBBOPrice(); bbo && event.price_ <= *bbo) {
-	  if (event.size_ <= bidSide_->getBBOSize()) {
-
+	if (_crossedBook(event)) {
+	  if (_undersizedCross(event)) {
 	    return processUndersizedCross(event, false);
-
 	  } else {
-	    
 	    return processOversizedCross(event, false);
-
 	  }
 	} else {
 	  // Normal order entry
