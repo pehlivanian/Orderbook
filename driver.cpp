@@ -1,12 +1,12 @@
 #include "driver.hpp"
 
-#define UNUSED(a) do { (void)(a); } while(0);
+#define UNUSED(a) \
+  do {            \
+    (void)(a);    \
+  } while (0);
 #define sync_cout std::osyncstream(std::cout)
 
-enum class runtime {
-  async,
-  sync
-};
+enum class runtime { async, sync };
 
 // New callback that just processes the order without promise
 void process_order(Message::order&& o) {
@@ -15,7 +15,7 @@ void process_order(Message::order&& o) {
   sync_cout << "Processed order: " << o.seqNum_ << std::endl;
 }
 
-auto main(int argc, char **argv) -> int {
+auto main(int argc, char** argv) -> int {
   UNUSED(argc);
   UNUSED(argv);
 
@@ -39,17 +39,20 @@ auto main(int argc, char **argv) -> int {
   using OrderedMPMCq = OrderedMPMCQueue<OrderType>;
 
   std::shared_ptr<SPMCq> q_source = std::make_shared<SPMCq>();
-  std::shared_ptr<OrderedMPMCQueue<OrderType>> q_target = std::make_shared<OrderedMPMCQueue<OrderType>>();
+  std::shared_ptr<OrderedMPMCQueue<OrderType>> q_target =
+      std::make_shared<OrderedMPMCQueue<OrderType>>();
 
   auto publisher = std::make_unique<Publisher<EventType>>(input_file, q_source);
-  auto consumer = std::make_unique<Consumer<EventType, OrderType>>(q_source, q_target, NUM_CONSUMERS, FIRST_HOP_DELAY);
-  auto serializer = std::make_unique<Serializer<OrderType>>(q_target, process_order, NUM_SERIALIZERS);
+  auto consumer = std::make_unique<Consumer<EventType, OrderType>>(q_source, q_target,
+                                                                   NUM_CONSUMERS, FIRST_HOP_DELAY);
+  auto serializer =
+      std::make_unique<Serializer<OrderType>>(q_target, process_order, NUM_SERIALIZERS);
 
   if (mode == runtime::async) {
     std::thread pub_thread{&Publisher<EventType>::publish, publisher.get()};
     std::thread con_thread{&Consumer<EventType, OrderType>::consume, consumer.get()};
     std::thread ser_thread{&Serializer<OrderType>::serialize, serializer.get()};
-    
+
     pub_thread.join();
     con_thread.join();
     ser_thread.join();

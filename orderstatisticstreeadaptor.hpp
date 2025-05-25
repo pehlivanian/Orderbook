@@ -10,9 +10,9 @@
 using namespace Utils;
 using namespace Message;
 
-template<typename T, typename Compare=std::less<T>>
+template <typename T, typename Compare = std::less<T>>
 class OrderStatisticsTree {
-private:
+ private:
   struct Node {
     T key;
     int size;  // Number of nodes in the subtree rooted at this node
@@ -25,9 +25,7 @@ private:
   Node* root;
 
   // Helper function to get the size of a node (handles null nodes)
-  int getSize(Node* node) {
-    return (node != nullptr) ? node->size : 0;
-  }
+  int getSize(Node* node) { return (node != nullptr) ? node->size : 0; }
 
   // Helper function to update the size of a node based on its children
   void updateSize(Node* node) {
@@ -78,7 +76,7 @@ private:
     if (balance > 1) {
       // Left-Right Case
       if (Compare()(node->left->key, key)) {
-	node->left = rotateLeft(node->left);
+        node->left = rotateLeft(node->left);
       }
       // Left-Left Case
       return rotateRight(node);
@@ -87,7 +85,7 @@ private:
     if (balance < -1) {
       // Right-Left Case
       if (Compare()(key, node->right->key)) {
-	node->right = rotateRight(node->right);
+        node->right = rotateRight(node->right);
       }
       // Right-Right Case
       return rotateLeft(node);
@@ -136,13 +134,13 @@ private:
 
       // Node with only one child or no child
       if (node->left == nullptr) {
-	Node* temp = node->right;
-	delete node;
-	return temp;
+        Node* temp = node->right;
+        delete node;
+        return temp;
       } else if (node->right == nullptr) {
-	Node* temp = node->left;
-	delete node;
-	return temp;
+        Node* temp = node->left;
+        delete node;
+        return temp;
       }
 
       // Node with two children, get the inorder successor (smallest in the right subtree)
@@ -165,7 +163,7 @@ private:
     if (balance > 1) {
       // Left-Right Case
       if (getSize(node->left->right) > getSize(node->left->left)) {
-	node->left = rotateLeft(node->left);
+        node->left = rotateLeft(node->left);
       }
       // Left-Left Case
       return rotateRight(node);
@@ -174,7 +172,7 @@ private:
     if (balance < -1) {
       // Right-Left Case
       if (getSize(node->right->left) > getSize(node->right->right)) {
-	node->right = rotateRight(node->right);
+        node->right = rotateRight(node->right);
       }
       // Right-Right Case
       return rotateLeft(node);
@@ -184,7 +182,7 @@ private:
   }
 
   // In order traversal
-  void printInOrderHelper(Node *node) {
+  void printInOrderHelper(Node* node) {
     if (node == nullptr)
       return;
 
@@ -193,36 +191,28 @@ private:
     printInOrderHelper(node->right);
   }
 
-public:
+ public:
   OrderStatisticsTree() : root(nullptr) {}
 
   // Public method to insert a key into the tree
-  void insert(const T& key) {
-    root = insert(root, key);
-  }
+  void insert(const T& key) { root = insert(root, key); }
 
   // Public method to delete a key from the tree
-  void deleteKey(const T& key) {
-    root = deleteNode(root, key);
-  }
+  void deleteKey(const T& key) { root = deleteNode(root, key); }
 
   // Public method to get the kth smallest element
-  T getKthSmallest(int k) {
-    return kthSmallest(root, k);
-  }
+  T getKthSmallest(int k) { return kthSmallest(root, k); }
 
   // In order traversal
-  void printInOrder() { 
+  void printInOrder() {
     printInOrderHelper(root);
     std::cout << std::endl;
   }
-
 };
 
-template<typename Compare, int N>
+template <typename Compare, int N>
 class OrderStatisticsTreeAdaptor {
-public:
-
+ public:
   OrderStatisticsTreeAdaptor() : book_{OrderStatisticsTree<order, Compare>{}} {}
 
   void insert_(const order&);
@@ -230,7 +220,7 @@ public:
   void update_(const order&);
   void execute_(const order&);
 
-private:
+ private:
   OrderStatisticsTree<order, Compare> book_;
 };
 

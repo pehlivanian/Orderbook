@@ -3,19 +3,18 @@
 
 #include "utils.hpp"
 
-#include <iterator>
 #include <fstream>
-#include <sstream>
-#include <iostream>
 #include <iomanip>
+#include <iostream>
+#include <iterator>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 
 using namespace Utils;
 using namespace Message;
 
 struct eventiterator {
-
   using iterator_category = std::forward_iterator_tag;
   using value_type = eventLOBSTER;
   using difference_type = std::ptrdiff_t;
@@ -26,16 +25,9 @@ struct eventiterator {
 
   eventiterator() noexcept {}
 
-  explicit eventiterator(const std::istreambuf_iterator<char>& rhs) noexcept :
-  it{rhs},
-    end{}
-  {}
+  explicit eventiterator(const std::istreambuf_iterator<char>& rhs) noexcept : it{rhs}, end{} {}
 
-  eventiterator(const char* buf) :
-    iss{buf},
-    it{iss},
-    end{}
-  {}
+  eventiterator(const char* buf) : iss{buf}, it{iss}, end{} {}
 
   eventiterator(eventiterator&& rhs) {
     iss = std::move(rhs.iss);
@@ -73,16 +65,11 @@ struct eventiterator {
     return rhs;
   }
 
-  bool operator==(const eventiterator& rhs) const noexcept {
-    return rhs.it == it;
-  }
+  bool operator==(const eventiterator& rhs) const noexcept { return rhs.it == it; }
 
-  bool operator!=(const eventiterator& rhs) const noexcept {
-    return !(rhs == *this);
-  }
+  bool operator!=(const eventiterator& rhs) const noexcept { return !(rhs == *this); }
 
   eventLOBSTER operator*() {
-
     // Fill out this struct
     //
     //     struct eventLOBSTER {
@@ -95,52 +82,51 @@ struct eventiterator {
     //       char direction_;
     //     };
 
-
     // We assume there is one EventStream object
-    // as we place seqNum sequentially on each event 
+    // as we place seqNum sequentially on each event
     // read.
 
     std::string line;
-    
+
     eventLOBSTER e{};
     e.seqNum_ = ++seqNum_;
 
     int fieldNum = 0;
-    
+
     while (*it != '\n') {
       while ((*it != ',') && (*it != '\n')) {
-	line += *it;
-	++it;
-      }
-      
-      switch(fieldNum) {
-      case(0):
-	e.time_ = std::stod(line);
-	break;
-      case(1):
-	e.eventType_ = std::stoi(line);
-	break;
-      case(2):
-	e.orderId_ = std::stoul(line);
-	break;
-      case(3):
-	e.size_ = static_cast<unsigned int>(std::stoul(line));
-	break;
-      case(4):
-	e.price_ = std::stol(line);
-	break;
-      case(5):
-	bool isBuy = (line == "1");
-	e.direction_ = line == "1" ? 'B' : 'S';
-	break;
+        line += *it;
+        ++it;
       }
 
-      if (*it == '\n') break;
+      switch (fieldNum) {
+        case (0):
+          e.time_ = std::stod(line);
+          break;
+        case (1):
+          e.eventType_ = std::stoi(line);
+          break;
+        case (2):
+          e.orderId_ = std::stoul(line);
+          break;
+        case (3):
+          e.size_ = static_cast<unsigned int>(std::stoul(line));
+          break;
+        case (4):
+          e.price_ = std::stol(line);
+          break;
+        case (5):
+          bool isBuy = (line == "1");
+          e.direction_ = line == "1" ? 'B' : 'S';
+          break;
+      }
+
+      if (*it == '\n')
+        break;
       line = std::string{};
       fieldNum++;
       ++it;
     }
-
 
     return e;
   }
@@ -148,21 +134,16 @@ struct eventiterator {
   std::istringstream iss;
   std::istreambuf_iterator<char> it;
   std::istreambuf_iterator<char> end;
-
 };
 
 class EventStream {
-public:
-
-  EventStream(std::string path) :
-    buf_{read_mmap(path.c_str())},
-    begin_{eventiterator{buf_}}
-  {}
+ public:
+  EventStream(std::string path) : buf_{read_mmap(path.c_str())}, begin_{eventiterator{buf_}} {}
 
   eventiterator begin() { return begin_; }
-  eventiterator end(){ return end_; }
+  eventiterator end() { return end_; }
 
-private:
+ private:
   const char* buf_;
   eventiterator begin_;
   eventiterator end_;

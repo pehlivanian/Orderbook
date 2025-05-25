@@ -3,15 +3,14 @@
 
 #include "concurrentqueue.h"
 
+#include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/shm.h>
 #include <sys/stat.h>
-#include <sys/mman.h>
 #include <unistd.h>
-#include <fcntl.h>
 
-template<typename T>
+template <typename T>
 inline T* shmem(const char* filename) {
-  
   int fd = shm_open(filename, O_CREAT | O_RDWR, 0666);
   if (fd == -1) {
     std::cerr << "shm_open failed: " << strerror(errno) << std::endl;

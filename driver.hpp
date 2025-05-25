@@ -1,23 +1,23 @@
 #ifndef __DRIVER_HPP__
 #define __DRIVER_HPP__
 
-#include "utils.hpp"
-#include "eventstream.hpp"
-#include "publisher.hpp"
-#include "orderedqueue.hpp"
 #include "consumer.hpp"
+#include "eventstream.hpp"
+#include "orderedqueue.hpp"
+#include "publisher.hpp"
 #include "serializer.hpp"
+#include "utils.hpp"
 
+#include <chrono>
+#include <fstream>
+#include <future>
+#include <iostream>
 #include <iterator>
 #include <memory>
-#include <fstream>
 #include <sstream>
-#include <iostream>
-#include <future>
-#include <vector>
-#include <thread>
-#include <chrono>
 #include <syncstream>
+#include <thread>
+#include <vector>
 
 using namespace Utils;
 using namespace Message;
