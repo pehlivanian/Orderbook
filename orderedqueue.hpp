@@ -88,8 +88,11 @@ class OrderedMPMCQueue {
     const size_t seqNum = event.seqNum_;
     const size_t idx = getIndex(seqNum);
 
-    size_t expectedCount = writeCount_.load(std::memory_order_relaxed);
-    if (expectedCount >= seqNum + Capacity) {
+    // Simple capacity check - don't allow more than Capacity pending events
+    size_t writeCount = writeCount_.load(std::memory_order_relaxed);
+    size_t nextToConsume = nextToConsume_.load(std::memory_order_relaxed);
+    
+    if (writeCount - nextToConsume >= Capacity) {
       return false;  // Queue is full
     }
 
@@ -103,6 +106,12 @@ class OrderedMPMCQueue {
     }
 
     EventType* newEvent = new EventType(std::move(event));
+    
+    // First, reset the node state
+    node.ready.store(false, std::memory_order_release);
+    node.processed.store(false, std::memory_order_release);
+    
+    // Then set the event
     EventType* expected = nullptr;
     if (!node.event.compare_exchange_strong(expected, newEvent, std::memory_order_release,
                                             std::memory_order_relaxed)) {
@@ -110,9 +119,10 @@ class OrderedMPMCQueue {
       return false;
     }
 
+    // Finally, mark as ready (this is the signal that the event is available)
     node.ready.store(true, std::memory_order_release);
-    node.processed.store(false, std::memory_order_release);
     writeCount_.fetch_add(1, std::memory_order_release);
+
 
     // sync_cout << "Enqueued event with seqNum_: " << event.seqNum_ << std::endl;
 
@@ -191,29 +201,43 @@ class OrderedMPMCQueue {
     // sync_cout << "Set nextToConsume_ to " << currentReadSeqNum + 1 << std::endl;
 
     // We've claimed this sequence number, now we can safely process it
-    if (!node.ready.load(std::memory_order_acquire)) {
-      // sync_cout << "Node is not ready" << std::endl;
-      return std::nullopt;
+    // Wait for the node to be ready and contain the correct event
+    for (int retry = 0; retry < 1000; ++retry) {
+      bool ready = node.ready.load(std::memory_order_acquire);
+      if (ready) {
+        EventType* evt = node.event.load(std::memory_order_acquire);
+        if (evt && evt->seqNum_ == currentReadSeqNum) {
+          // Found the correct event, proceed with processing
+          goto process_event;
+        }
+      }
+      if (retry == 999) {
+        // Failed to get the event - need to restore nextToConsume since we claimed it
+        nextToConsume_.store(currentReadSeqNum, std::memory_order_release);
+        
+        return std::nullopt;
+      }
+      std::this_thread::yield();
     }
-
-
+    
+    process_event:
     EventType* evt = node.event.load(std::memory_order_acquire);
-    if (!evt || evt->seqNum_ != currentReadSeqNum) {
-      // sync_cout << "Event is not the correct sequence number" << std::endl;
-      return std::nullopt;
-    }
 
 
     // sync_cout << "Event is the correct sequence number" << std::endl;
 
     // Move the event data
     EventType result = *evt;  // Copy the event before deleting
-    delete evt;
-    node.event.store(nullptr, std::memory_order_release);
-    node.ready.store(false, std::memory_order_release);
-
+    
     if (!external_ack) {
+      // Delete immediately and mark processed
+      delete evt;
+      node.event.store(nullptr, std::memory_order_release);
+      node.ready.store(false, std::memory_order_release);
       mark_processed(currentReadSeqNum);
+    } else {
+      // Don't delete yet - mark_processed will do it
+      node.ready.store(false, std::memory_order_release);
     }
 
     return result;
@@ -223,10 +247,17 @@ class OrderedMPMCQueue {
     const size_t idx = getIndex(seqNum);
     Node& node = buffer_[idx];
 
-    // Record processing completion order
+    // Delete the event if it's still there (external_ack case)
+    EventType* evt = node.event.load(std::memory_order_acquire);
+    if (evt) {
+      delete evt;
+      node.event.store(nullptr, std::memory_order_release);
+    }
+
+    // Record processing completion order (separate from dequeue order)
     {
       std::lock_guard<std::mutex> lock(process_mut);
-      dequeue_order_.push_back(seqNum);
+      // Note: dequeue order is recorded at claim time, not processing time
     }
 
     // Mark this node as processed
@@ -254,6 +285,10 @@ class OrderedMPMCQueue {
            nextToConsume_.load(std::memory_order_relaxed);
   }
 
+  size_t getNextToConsume() const {
+    return nextToConsume_.load(std::memory_order_relaxed);
+  }
+
   void replay() const {
     std::cout << "Dequeue order:\n";
     std::copy(dequeue_order_.begin(), dequeue_order_.end(),
@@ -266,6 +301,37 @@ class OrderedMPMCQueue {
   std::vector<std::size_t> get_dequeue_order() const {
     std::lock_guard<std::mutex> lock(dequeue_mut);
     return dequeue_order_;
+  }
+
+  void clear_dequeue_order() {
+    std::lock_guard<std::mutex> lock(dequeue_mut);
+    dequeue_order_.clear();
+  }
+
+  void reset() {
+    // Clear all nodes completely
+    for (auto& node : buffer_) {
+      EventType* event = node.event.load(std::memory_order_relaxed);
+      if (event) {
+        delete event;
+      }
+      node.event.store(nullptr, std::memory_order_release);
+      node.ready.store(false, std::memory_order_release);
+      node.processed.store(false, std::memory_order_release);
+    }
+    
+    // Reset counters with full memory barriers
+    writeCount_.store(0, std::memory_order_seq_cst);
+    nextToConsume_.store(0, std::memory_order_seq_cst);
+    
+    // Clear tracking vectors
+    {
+      std::lock_guard<std::mutex> lock(dequeue_mut);
+      dequeue_order_.clear();
+    }
+    
+    // Additional synchronization to ensure all threads see the reset
+    std::atomic_thread_fence(std::memory_order_seq_cst);
   }
 
 };

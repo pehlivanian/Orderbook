@@ -31,6 +31,10 @@ class OrderedMPMCQueueTest : public ::testing::Test {
  protected:
   static constexpr size_t QUEUE_CAPACITY = 1024;
   OrderedMPMCQueue<TestEvent, QUEUE_CAPACITY> queue;
+  
+  void SetUp() override {
+    queue.reset();
+  }
 };
 
 
