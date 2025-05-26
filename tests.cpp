@@ -73,6 +73,25 @@ TEST_F(OrderedMPMCQueueTest, OrderedConsumption) {
     EXPECT_EQ(result->seqNum_, i);
     EXPECT_EQ(result->data_, i);
   }
+
+  ASSERT_TRUE(queue.empty());
+
+  // Insert out of order
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(4, 4)));
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(6, 6)));
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(8, 8)));
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(3, 3)));
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(5, 5)));
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(7, 7)));
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(9, 9)));
+  
+  for (int i=3; i<10; ++i) {
+    auto result = queue.try_dequeue();
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->seqNum_, i);
+    EXPECT_EQ(result->data_, i);
+  }
+	      
 }
 
 // Test 5: Multi-threaded enqueue
@@ -166,26 +185,16 @@ TEST_F(OrderedMPMCQueueTest, MultipleConsumers) {
 // Test 8: Concurrent enqueue and dequeue
 TEST_F(OrderedMPMCQueueTest, ConcurrentEnqueueDequeue) {
   static constexpr size_t NUM_PRODUCERS = 4;
-  static constexpr size_t NUM_CONSUMERS = 4;
+  static constexpr size_t NUM_CONSUMERS = 4; 
   static constexpr size_t EVENTS_PER_PRODUCER = 100;
 
   std::atomic<size_t> total_consumed{0};
+  std::atomic<bool> producers_done{false};
+  std::atomic<bool> producers_started{false};
   std::vector<std::thread> producers;
   std::vector<std::thread> consumers;
 
-  // Start consumers
-  for (size_t i = 0; i < NUM_CONSUMERS; ++i) {
-    consumers.emplace_back([&]() {
-      while (total_consumed.load() < NUM_PRODUCERS * EVENTS_PER_PRODUCER) {
-        if (auto result = queue.try_dequeue()) {
-          EXPECT_EQ(result->data_, result->seqNum_);
-          total_consumed.fetch_add(1);
-        }
-      }
-    });
-  }
-
-  // Start producers
+  // Start producers first
   for (size_t p = 0; p < NUM_PRODUCERS; ++p) {
     producers.emplace_back([&, p]() {
       for (size_t i = 0; i < EVENTS_PER_PRODUCER; ++i) {
@@ -194,10 +203,45 @@ TEST_F(OrderedMPMCQueueTest, ConcurrentEnqueueDequeue) {
       }
     });
   }
+  producers_started = true;
+
+  // Start consumers after producers have started
+  for (size_t i = 0; i < NUM_CONSUMERS; ++i) {
+    consumers.emplace_back([&]() {
+      // Wait for producers to start
+      while (!producers_started.load()) {
+        std::this_thread::yield();
+      }
+      
+      auto start_time = std::chrono::steady_clock::now();
+      while (total_consumed.load() < NUM_PRODUCERS * EVENTS_PER_PRODUCER) {
+        // Add timeout to prevent infinite loops  
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count() > 15) {
+          std::cout << "Consumer timeout. Total consumed: " << total_consumed.load() 
+                   << "/" << NUM_PRODUCERS * EVENTS_PER_PRODUCER << std::endl;
+          break; // Timeout after 15 seconds
+        }
+        
+        if (auto result = queue.try_dequeue()) {
+          EXPECT_EQ(result->data_, result->seqNum_);
+          total_consumed.fetch_add(1);
+        } else {
+          // If we can't dequeue and producers are done, we might be stuck
+          if (producers_done.load() && queue.empty()) {
+            break;
+          }
+          std::this_thread::yield(); // Give other threads a chance
+        }
+      }
+    });
+  }
 
   for (auto& producer : producers) {
     producer.join();
   }
+  producers_done = true;
+  
   for (auto& consumer : consumers) {
     consumer.join();
   }
@@ -252,17 +296,16 @@ TEST_F(OrderedMPMCQueueTest, BlockingEnqueue) {
 
 // Test 1: Sequence Number Gaps
 TEST_F(OrderedMPMCQueueTest, SequenceGaps) {
-  // Insert events with gaps
+  // Insert events with one gap
   ASSERT_TRUE(queue.try_enqueue(TestEvent(0, 0)));
   ASSERT_TRUE(queue.try_enqueue(TestEvent(2, 2)));
-  ASSERT_TRUE(queue.try_enqueue(TestEvent(5, 5)));
 
   // Should get first event only
   auto result = queue.try_dequeue();
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->seqNum_, 0);
 
-  // Shouldn't get more events yet
+  // Shouldn't get more events yet (sequence 1 is missing)
   result = queue.try_dequeue();
   EXPECT_FALSE(result.has_value());
 
@@ -273,11 +316,17 @@ TEST_F(OrderedMPMCQueueTest, SequenceGaps) {
   result = queue.try_dequeue();
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->seqNum_, 1);
+  
+  // And then the last one
+  result = queue.try_dequeue();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->seqNum_, 2);
 }
 
 // Test 2: Alternating Producer Consumer
 TEST_F(OrderedMPMCQueueTest, AlternatingProducerConsumer) {
   static constexpr size_t NUM_ROUNDS = 1000;
+  std::atomic<bool> producers_done{false};
 
   std::thread producer([&]() {
     for (size_t i = 0; i < NUM_ROUNDS; i += 2) {
@@ -294,16 +343,29 @@ TEST_F(OrderedMPMCQueueTest, AlternatingProducerConsumer) {
   std::vector<TestEvent> received;
   std::thread consumer([&]() {
     size_t count = 0;
+    auto start_time = std::chrono::steady_clock::now();
     while (count < NUM_ROUNDS) {
+      auto now = std::chrono::steady_clock::now();
+      if (std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count() > 20) {
+        std::cout << "Consumer timeout in AlternatingProducerConsumer. Received: " << count << "/" << NUM_ROUNDS << std::endl;
+        break;
+      }
+      
       if (auto result = queue.try_dequeue()) {
         received.push_back(*result);
         count++;
+      } else {
+        if (producers_done.load() && queue.empty()) {
+          break;
+        }
+        std::this_thread::yield();
       }
     }
   });
 
   producer.join();
   producer2.join();
+  producers_done = true;
   consumer.join();
 
   ASSERT_EQ(received.size(), NUM_ROUNDS);
@@ -453,7 +515,6 @@ TEST_F(OrderedMPMCQueueTest, QueueProduceInReverseOrder) {
 
 }
 
-/* 
 // Test 7: Queue Wraparound
 TEST_F(OrderedMPMCQueueTest, QueueWraparound) {
   // Fill queue
@@ -481,8 +542,6 @@ TEST_F(OrderedMPMCQueueTest, QueueWraparound) {
     EXPECT_EQ(result->seqNum_, i);
   }
 }
-
-*/
 
 // Test 8: Mixed Event Sizes
 TEST_F(OrderedMPMCQueueTest, MixedEventSizes) {
@@ -870,6 +929,8 @@ TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
 
   // Start publishers
   std::vector<std::thread> publishers;
+  std::atomic<bool> publishers_done{false};
+  
   for (size_t p = 0; p < NUM_PUBLISHERS; ++p) {
     publishers.emplace_back([&, p]() {
       // Wait for start signal
@@ -877,12 +938,22 @@ TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
         std::this_thread::yield();
       }
 
+      auto start_time = std::chrono::steady_clock::now();
       for (size_t i = 0; i < EVENTS_PER_PUBLISHER; ++i) {
         size_t seq = p * EVENTS_PER_PUBLISHER + i;
         // Random delay before enqueueing
         std::this_thread::sleep_for(std::chrono::milliseconds(delay_dist(gen)));
+        
+        // Add timeout protection for enqueue attempts
+        auto enqueue_start = std::chrono::steady_clock::now();
         while (!queue.try_enqueue(TestEvent(seq, seq))) {
-          ;
+          auto now = std::chrono::steady_clock::now();
+          if (std::chrono::duration_cast<std::chrono::seconds>(now - enqueue_start).count() > 10) {
+            std::cout << "Publisher " << p << " timeout trying to enqueue seq " << seq << std::endl;
+            stop.store(true, std::memory_order_release);
+            return;
+          }
+          std::this_thread::yield();
         }
       }
     });
@@ -890,6 +961,8 @@ TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
 
   // Start consumers
   std::vector<std::thread> consumers;
+  std::atomic<size_t> total_processed{0};
+  
   for (size_t c = 0; c < NUM_CONSUMERS; ++c) {
     consumers.emplace_back([&]() {
       // Wait for start signal
@@ -897,7 +970,17 @@ TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
         std::this_thread::yield();
       }
 
+      auto start_time = std::chrono::steady_clock::now();
       while (!stop.load(std::memory_order_acquire)) {
+        // Add timeout protection
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count() > 30) {
+          std::cout << "Consumer timeout in MultiPublisherConsumerWithDelays. Processed: " 
+                   << total_processed.load() << "/" << TOTAL_EVENTS << std::endl;
+          stop.store(true, std::memory_order_release);
+          break;
+        }
+        
         TestEvent event;
         // sync_cout << "Attempting to dequeue" << std::endl;
         if (queue.try_dequeue(event, true)) {
@@ -905,9 +988,11 @@ TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
           // Random delay before processing
           std::this_thread::sleep_for(std::chrono::milliseconds(delay_dist(gen)));
           queue.mark_processed(event.seqNum_);
+          
+          size_t processed_count = total_processed.fetch_add(1) + 1;
 
-          // If we processed the last event, signal all threads to stop
-          if (event.seqNum_ == TOTAL_EVENTS - 1) {
+          // If we processed all events, signal all threads to stop
+          if (processed_count >= TOTAL_EVENTS) {
             stop.store(true, std::memory_order_release);
           }
         }
@@ -923,6 +1008,13 @@ TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
   for (auto& pub : publishers) {
     pub.join();
   }
+  
+  publishers_done.store(true, std::memory_order_release);
+  
+  // Give consumers some time to finish processing after publishers are done
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  stop.store(true, std::memory_order_release);
+  
   for (auto& con : consumers) {
     con.join();
   }

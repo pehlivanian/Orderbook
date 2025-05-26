@@ -119,6 +119,14 @@ class OrderedMPMCQueue {
     return true;
   }
 
+  EventType dequeue(bool external_ack=false) {
+    EventType e;
+    while (!try_dequeue(e, external_ack)) {
+      std::this_thread::yield();
+    }
+    return e;
+  }
+
   bool try_dequeue(EventType& e, bool external_ack=false) {
     std::optional<EventType> opt = try_dequeue(external_ack);
     if (opt.has_value()) {
@@ -132,26 +140,35 @@ class OrderedMPMCQueue {
     size_t currentReadSeqNum = nextToConsume_.load(std::memory_order_acquire);
     const size_t idx = getIndex(currentReadSeqNum);
 
-    // sync_cout << "Trying to dequeue sequence number " << currentReadSeqNum << std::endl;
+#ifdef DEBUG
+    sync_cout << "Trying to dequeue sequence number " << currentReadSeqNum << std::endl;
+#endif
 
     Node& node = buffer_[idx];
 
-    // Previous node must be processed, but only if we're not processing seqNum 0
+    // Check if previous sequence was processed (ordering constraint)
     if (currentReadSeqNum > 0) {
-      // Only need to check the immediately previous node
-      size_t prevIdx = getIndex(currentReadSeqNum - 1);
+      size_t prevSeqNum = currentReadSeqNum - 1;
+      size_t prevIdx = getIndex(prevSeqNum);
       Node& prevNode = buffer_[prevIdx];
-      if (!prevNode.processed.load(std::memory_order_acquire)) {
-	
-	// XXX
-	// Maybe we can preload buffer_ with bare events but the correct sequence numbers.
-	// Otherwise the following line throws if prevNode.event is nullptr 
-	// if (prevNode.event.load(std::memory_order_acquire)->seqNum_ <= currentReadSeqNum) {
-	if (true) {
-	  // sync_cout << "Previous node { index: " << prevIdx << " } is not processed" << std::endl;
-	  return std::nullopt;
-	}
       
+      // Check if the previous sequence was processed
+      bool prevProcessed = prevNode.processed.load(std::memory_order_acquire);
+      
+      
+      if (!prevProcessed) {
+        // Previous not processed yet - but check if it's actually the sequence we're waiting for
+        EventType* prevEvent = prevNode.event.load(std::memory_order_acquire);
+        
+        // If the previous slot is empty, the sequence was processed and cleared
+        if (!prevEvent) {
+          // Previous sequence was processed, continue
+        } else if (prevEvent->seqNum_ == prevSeqNum) {
+          // We're waiting for this exact sequence - block until it's processed
+          return std::nullopt;
+        }
+        // If prevEvent->seqNum_ != prevSeqNum, it's a different sequence (wraparound case)
+        // so our previous sequence was already processed
       }
     }
 
@@ -160,49 +177,38 @@ class OrderedMPMCQueue {
     if (!nextToConsume_.compare_exchange_strong(expected, currentReadSeqNum + 1,
                                                 std::memory_order_acq_rel,
                                                 std::memory_order_acquire)) {
-      // sync_cout << "Failed to claim sequence number " << currentReadSeqNum << std::endl;
+#ifdef DEBUG
+      sync_cout << "CLAIM FAILED: Thread failed to claim seq " << currentReadSeqNum << ", expected " << expected << " but nextToConsume_ is " << nextToConsume_.load() << std::endl;
+#endif
       return std::nullopt;
     }
 
-    // sync_cout << "Set nextToConsume_ to " << currentReadSeqNum + 1 << std::endl;
 
-    // If we fail after this point, we need to roll back nextToConsume_
-    // I think this works; any other thread that comes in and is looking
-    // to dequeue the next node will preNode as not processed in the
-    // previous check.
-    bool success = false;
-    auto rollback = [&](void*) {
-      // sync_cout << "RAII guard destructor called for seqNum " << currentReadSeqNum << std::endl;
-      if (!success) {
-        // sync_cout << "Rolling back nextToConsume_ to " << currentReadSeqNum << std::endl;
-        nextToConsume_.store(currentReadSeqNum, std::memory_order_release);
-      } else {
-        // sync_cout << "No rollback needed - operation was successful" << std::endl;
-      }
-    };
-    auto guard = std::unique_ptr<void, decltype(rollback)>(nullptr, rollback);
+#ifdef DEBUG
+    sync_cout << "CLAIMED: seq " << currentReadSeqNum << std::endl;
+#endif
+
+    // sync_cout << "Set nextToConsume_ to " << currentReadSeqNum + 1 << std::endl;
 
     // We've claimed this sequence number, now we can safely process it
     if (!node.ready.load(std::memory_order_acquire)) {
       // sync_cout << "Node is not ready" << std::endl;
-      // sync_cout << "Rolling back nextToConsume_ to " << currentReadSeqNum << std::endl;
-      nextToConsume_.store(currentReadSeqNum, std::memory_order_release);
-
       return std::nullopt;
     }
+
 
     EventType* evt = node.event.load(std::memory_order_acquire);
     if (!evt || evt->seqNum_ != currentReadSeqNum) {
       // sync_cout << "Event is not the correct sequence number" << std::endl;
-      // sync_cout << "Rolling back nextToConsume_ to " << currentReadSeqNum << std::endl;
-      nextToConsume_.store(currentReadSeqNum, std::memory_order_release);
-
       return std::nullopt;
     }
+
 
     // sync_cout << "Event is the correct sequence number" << std::endl;
 
     // Move the event data
+    EventType result = *evt;  // Copy the event before deleting
+    delete evt;
     node.event.store(nullptr, std::memory_order_release);
     node.ready.store(false, std::memory_order_release);
 
@@ -210,7 +216,7 @@ class OrderedMPMCQueue {
       mark_processed(currentReadSeqNum);
     }
 
-    return *evt;
+    return result;
   }
 
   void mark_processed(size_t seqNum) {
@@ -226,7 +232,10 @@ class OrderedMPMCQueue {
     // Mark this node as processed
     node.processed.store(true, std::memory_order_release);
 
-    // sync_cout << "Marked processed event " << seqNum << std::endl;
+
+#ifdef DEBUG
+    sync_cout << "Marked processed event " << seqNum << std::endl;
+#endif
   }
 
   bool empty() const {
