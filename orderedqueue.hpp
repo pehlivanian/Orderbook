@@ -53,12 +53,7 @@ class OrderedMPMCQueue {
   mutable std::mutex dequeue_mut;
   std::vector<std::size_t> dequeue_order_;
 
-  // Track processing completion order
-
   size_t getIndex(size_t seqNum) const { return seqNum & MASK; }
-
-  mutable std::mutex vector_mut;
-  std::vector<std::size_t> local_processed_ = std::vector<std::size_t>{};
 
  public:
   OrderedMPMCQueue() = default;
@@ -222,7 +217,7 @@ class OrderedMPMCQueue {
       std::this_thread::yield();
     }
     
-    process_event:
+  process_event:
     EventType* evt = node.event.load(std::memory_order_acquire);
 
 
