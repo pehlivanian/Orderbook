@@ -54,7 +54,6 @@ class OrderedMPMCQueue {
   std::vector<std::size_t> dequeue_order_;
 
   // Track processing completion order
-  mutable std::mutex process_mut;
 
   size_t getIndex(size_t seqNum) const { return seqNum & MASK; }
 
@@ -92,7 +91,7 @@ class OrderedMPMCQueue {
     size_t writeCount = writeCount_.load(std::memory_order_relaxed);
     size_t nextToConsume = nextToConsume_.load(std::memory_order_relaxed);
     
-    if (writeCount - nextToConsume >= Capacity) {
+    if (writeCount >= nextToConsume + Capacity) {
       return false;  // Queue is full
     }
 
@@ -257,12 +256,6 @@ class OrderedMPMCQueue {
       node.event.store(nullptr, std::memory_order_release);
     }
 
-    // Record processing completion order (separate from dequeue order)
-    {
-      std::lock_guard<std::mutex> lock(process_mut);
-      // Note: dequeue order is recorded at claim time, not processing time
-    }
-
     // Mark this node as processed
     node.processed.store(true, std::memory_order_release);
 
@@ -284,8 +277,9 @@ class OrderedMPMCQueue {
   }
 
   size_t size() const {
-    return writeCount_.load(std::memory_order_relaxed) -
-           nextToConsume_.load(std::memory_order_relaxed);
+    size_t writeCount = writeCount_.load(std::memory_order_relaxed);
+    size_t nextToConsume = nextToConsume_.load(std::memory_order_relaxed);
+    return writeCount >= nextToConsume ? writeCount - nextToConsume : 0;
   }
 
   size_t getNextToConsume() const {

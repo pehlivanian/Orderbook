@@ -600,6 +600,7 @@ TEST_F(OrderedMPMCQueueTest, BulkOperations) {
   EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(dequeue_time).count(), 1000);
 }
 
+
 // Test 1: Very Large Sequence Number Jumps
 TEST_F(OrderedMPMCQueueTest, VeryLargeSequenceJumps) {
   std::vector<unsigned long> seqNumbers = {
@@ -918,6 +919,520 @@ TEST_F(OrderedMPMCQueueTest, MultiWorkerDequeueOrdering) {
 
 }
 
+// Test 13: Empty Queue Operations
+TEST_F(OrderedMPMCQueueTest, EmptyQueueOperations) {
+  EXPECT_TRUE(queue.empty());
+  EXPECT_EQ(queue.size(), 0);
+  
+  // Multiple empty dequeue attempts
+  for (int i = 0; i < 10; ++i) {
+    auto result = queue.try_dequeue();
+    EXPECT_FALSE(result.has_value());
+  }
+  
+  EXPECT_TRUE(queue.empty());
+  EXPECT_EQ(queue.size(), 0);
+}
+
+// Test 14: Single Element Operations
+TEST_F(OrderedMPMCQueueTest, SingleElementOperations) {
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(0, 42)));
+  EXPECT_FALSE(queue.empty());
+  EXPECT_EQ(queue.size(), 1);
+  
+  auto result = queue.try_dequeue();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->seqNum_, 0);
+  EXPECT_EQ(result->data_, 42);
+  
+  EXPECT_TRUE(queue.empty());
+  EXPECT_EQ(queue.size(), 0);
+}
+
+// Test 15: Maximum Capacity Test
+TEST_F(OrderedMPMCQueueTest, MaximumCapacityTest) {
+  // Fill queue to maximum capacity
+  for (size_t i = 0; i < QUEUE_CAPACITY; ++i) {
+    ASSERT_TRUE(queue.try_enqueue(TestEvent(i, i)));
+  }
+  
+  EXPECT_EQ(queue.size(), QUEUE_CAPACITY);
+  EXPECT_TRUE(queue.full());
+  
+  // Try to add one more - should fail
+  EXPECT_FALSE(queue.try_enqueue(TestEvent(QUEUE_CAPACITY, 999)));
+  
+  // Drain the queue
+  for (size_t i = 0; i < QUEUE_CAPACITY; ++i) {
+    auto result = queue.try_dequeue();
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->seqNum_, i);
+  }
+  
+  EXPECT_TRUE(queue.empty());
+}
+
+// Test 16: Large Sequence Number Jumps
+TEST_F(OrderedMPMCQueueTest, LargeSequenceJumps) {
+  // Test that the queue can handle large sequence numbers correctly
+  // but still enforce ordering constraints
+  
+  // Enqueue sequences 0, 1, 2 first to establish ordering
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(0, 100)));
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(1, 101)));  
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(2, 102)));
+  
+  // Now try to enqueue a much larger sequence number
+  size_t large_seq = 1000000;
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(large_seq, 999)));
+  
+  // Should only be able to consume in order starting from 0
+  auto result = queue.try_dequeue();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->seqNum_, 0);
+  EXPECT_EQ(result->data_, 100);
+  
+  result = queue.try_dequeue();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->seqNum_, 1);
+  EXPECT_EQ(result->data_, 101);
+  
+  result = queue.try_dequeue();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->seqNum_, 2);
+  EXPECT_EQ(result->data_, 102);
+  
+  // The large sequence number should not be available yet
+  // because sequences 3 through 999999 haven't been enqueued
+  result = queue.try_dequeue();
+  EXPECT_FALSE(result.has_value());
+}
+
+// Test 17: Interleaved Enqueue/Dequeue
+TEST_F(OrderedMPMCQueueTest, InterleavedEnqueueDequeue) {
+  size_t dequeue_count = 0;
+  
+  for (size_t i = 0; i < 100; ++i) {
+    ASSERT_TRUE(queue.try_enqueue(TestEvent(i, i)));
+    
+    // Every 3rd iteration (after enqueuing 3, 6, 9, etc.), dequeue the next in sequence
+    if (i % 3 == 0 && i > 0) {
+      auto result = queue.try_dequeue();
+      ASSERT_TRUE(result.has_value());
+      // Should get the next sequence number in order, not the one we just enqueued
+      EXPECT_EQ(result->seqNum_, dequeue_count);
+      dequeue_count++;
+    }
+  }
+  
+  // Drain remaining events in sequence order
+  while (true) {
+    auto result = queue.try_dequeue();
+    if (!result.has_value()) break;
+    EXPECT_EQ(result->seqNum_, dequeue_count);
+    dequeue_count++;
+  }
+  
+  // Should have consumed all 100 events
+  EXPECT_EQ(dequeue_count, 100);
+}
+
+// Test 18: Thread Safety with Rapid Operations
+TEST_F(OrderedMPMCQueueTest, ThreadSafetyRapidOps) {
+  static constexpr size_t NUM_THREADS = 8;
+  static constexpr size_t OPS_PER_THREAD = 50;
+  
+  std::vector<std::thread> threads;
+  std::atomic<size_t> seq_counter{0};
+  std::atomic<size_t> consumed_count{0};
+  
+  // Producer threads
+  for (size_t t = 0; t < NUM_THREADS / 2; ++t) {
+    threads.emplace_back([&]() {
+      for (size_t i = 0; i < OPS_PER_THREAD; ++i) {
+        size_t seq = seq_counter.fetch_add(1);
+        while (!queue.try_enqueue(TestEvent(seq, seq))) {
+          std::this_thread::yield();
+        }
+      }
+    });
+  }
+  
+  // Consumer threads
+  for (size_t t = 0; t < NUM_THREADS / 2; ++t) {
+    threads.emplace_back([&]() {
+      while (consumed_count.load() < NUM_THREADS / 2 * OPS_PER_THREAD) {
+        auto result = queue.try_dequeue();
+        if (result.has_value()) {
+          consumed_count.fetch_add(1);
+        } else {
+          std::this_thread::yield();
+        }
+      }
+    });
+  }
+  
+  for (auto& t : threads) {
+    t.join();
+  }
+  
+  EXPECT_EQ(consumed_count.load(), NUM_THREADS / 2 * OPS_PER_THREAD);
+}
+
+
+// Test 19: External Ack Stress Test
+TEST_F(OrderedMPMCQueueTest, ExternalAckStressTest) {
+  static constexpr size_t NUM_EVENTS = 200;
+  
+  // Enqueue events
+  for (size_t i = 0; i < NUM_EVENTS; ++i) {
+    ASSERT_TRUE(queue.try_enqueue(TestEvent(i, i)));
+  }
+  
+  std::vector<TestEvent> dequeued_events;
+  
+  // Dequeue with external ack
+  for (size_t i = 0; i < NUM_EVENTS; ++i) {
+    TestEvent event;
+    ASSERT_TRUE(queue.try_dequeue(event));
+    EXPECT_EQ(event.seqNum_, i);
+    dequeued_events.push_back(event);
+  }
+  
+  // Process in random order
+  std::random_device rd;
+  std::mt19937 g(rd());
+  std::shuffle(dequeued_events.begin(), dequeued_events.end(), g);
+  
+  for (const auto& event : dequeued_events) {
+    queue.mark_processed(event.seqNum_);
+  }
+  
+  EXPECT_TRUE(queue.empty());
+}
+
+// Test 20: Wraparound Stress Test
+TEST_F(OrderedMPMCQueueTest, WraparoundStressTest) {
+  static constexpr size_t WRAPAROUND_CYCLES = 3;
+  static constexpr size_t EVENTS_PER_CYCLE = QUEUE_CAPACITY / 2;
+  
+  size_t total_produced = 0;
+  size_t total_consumed = 0;
+  
+  for (size_t cycle = 0; cycle < WRAPAROUND_CYCLES; ++cycle) {
+    // Fill partially
+    for (size_t i = 0; i < EVENTS_PER_CYCLE; ++i) {
+      size_t seq = total_produced++;
+      ASSERT_TRUE(queue.try_enqueue(TestEvent(seq, seq)));
+    }
+    
+    // Consume partially
+    for (size_t i = 0; i < EVENTS_PER_CYCLE; ++i) {
+      auto result = queue.try_dequeue();
+      ASSERT_TRUE(result.has_value());
+      EXPECT_EQ(result->seqNum_, total_consumed++);
+    }
+  }
+  
+  EXPECT_TRUE(queue.empty());
+}
+
+// Test 21: Metadata Preservation
+TEST_F(OrderedMPMCQueueTest, MetadataPreservation) {
+  std::string metadata1 = "important_data_1";
+  std::string metadata2 = "critical_info_2";
+  std::string metadata3 = "user_context_3";
+  
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(0, 100, metadata1)));
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(1, 200, metadata2)));
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(2, 300, metadata3)));
+  
+  auto result = queue.try_dequeue();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->seqNum_, 0);
+  EXPECT_EQ(result->data_, 100);
+  EXPECT_EQ(result->metadata_, metadata1);
+  
+  result = queue.try_dequeue();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->seqNum_, 1);
+  EXPECT_EQ(result->data_, 200);
+  EXPECT_EQ(result->metadata_, metadata2);
+  
+  result = queue.try_dequeue();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->seqNum_, 2);
+  EXPECT_EQ(result->data_, 300);
+  EXPECT_EQ(result->metadata_, metadata3);
+}
+
+// Test 22: Producer Backpressure Handling
+TEST_F(OrderedMPMCQueueTest, ProducerBackpressureHandling) {
+  // Fill queue completely
+  for (size_t i = 0; i < QUEUE_CAPACITY; ++i) {
+    ASSERT_TRUE(queue.try_enqueue(TestEvent(i, i)));
+  }
+  
+  // Multiple producers should fail to enqueue
+  std::atomic<int> failed_enqueues{0};
+  std::vector<std::thread> producers;
+  
+  for (int p = 0; p < 4; ++p) {
+    producers.emplace_back([&]() {
+      for (int i = 0; i < 10; ++i) {
+        if (!queue.try_enqueue(TestEvent(QUEUE_CAPACITY + i, i))) {
+          failed_enqueues.fetch_add(1);
+        }
+      }
+    });
+  }
+  
+  for (auto& p : producers) {
+    p.join();
+  }
+  
+  EXPECT_GT(failed_enqueues.load(), 0);
+  EXPECT_TRUE(queue.full());
+}
+
+// Test 23: Consumer Starvation Recovery  
+TEST_F(OrderedMPMCQueueTest, ConsumerStarvationRecovery) {
+  static constexpr size_t NUM_EVENTS = 50;
+  
+  // First produce some events
+  for (size_t i = 0; i < NUM_EVENTS; ++i) {
+    ASSERT_TRUE(queue.try_enqueue(TestEvent(i, i)));
+  }
+  
+  // Then consume them all
+  size_t consumed = 0;
+  for (size_t i = 0; i < NUM_EVENTS; ++i) {
+    auto result = queue.try_dequeue();
+    if (result.has_value()) {
+      consumed++;
+    }
+  }
+  
+  EXPECT_EQ(consumed, NUM_EVENTS);
+}
+
+// Test 24: Mixed Event Types
+TEST_F(OrderedMPMCQueueTest, MixedEventTypes) {
+  // Enqueue events with different data patterns
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(0, 0)));          // Zero
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(1, -1)));         // Negative
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(2, INT_MAX)));    // Max int
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(3, INT_MIN)));    // Min int
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(4, 42)));         // Regular
+  
+  // Verify order and data integrity
+  auto result = queue.try_dequeue();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->seqNum_, 0);
+  EXPECT_EQ(result->data_, 0);
+  
+  result = queue.try_dequeue();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->seqNum_, 1);
+  EXPECT_EQ(result->data_, -1);
+  
+  result = queue.try_dequeue();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->seqNum_, 2);
+  EXPECT_EQ(result->data_, INT_MAX);
+  
+  result = queue.try_dequeue();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->seqNum_, 3);
+  EXPECT_EQ(result->data_, INT_MIN);
+  
+  result = queue.try_dequeue();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->seqNum_, 4);
+  EXPECT_EQ(result->data_, 42);
+}
+
+// Test 25: High Frequency Operations
+TEST_F(OrderedMPMCQueueTest, HighFrequencyOperations) {
+  static constexpr size_t NUM_ITERATIONS = 1000;
+  std::atomic<size_t> operations_completed{0};
+  
+  std::thread producer([&]() {
+    for (size_t i = 0; i < NUM_ITERATIONS; ++i) {
+      while (!queue.try_enqueue(TestEvent(i, i))) {
+        // Busy wait
+      }
+      operations_completed.fetch_add(1);
+    }
+  });
+  
+  std::thread consumer([&]() {
+    size_t consumed = 0;
+    while (consumed < NUM_ITERATIONS) {
+      auto result = queue.try_dequeue();
+      if (result.has_value()) {
+        EXPECT_EQ(result->seqNum_, consumed);
+        consumed++;
+        operations_completed.fetch_add(1);
+      }
+    }
+  });
+  
+  producer.join();
+  consumer.join();
+  
+  EXPECT_EQ(operations_completed.load(), NUM_ITERATIONS * 2);
+}
+
+// Test 26: Queue State Consistency
+TEST_F(OrderedMPMCQueueTest, QueueStateConsistency) {
+  static constexpr size_t NUM_EVENTS = 50;
+  
+  // Add events
+  for (size_t i = 0; i < NUM_EVENTS; ++i) {
+    ASSERT_TRUE(queue.try_enqueue(TestEvent(i, i)));
+    EXPECT_EQ(queue.size(), i + 1);
+    EXPECT_FALSE(queue.empty());
+  }
+  
+  // Remove events
+  for (size_t i = 0; i < NUM_EVENTS; ++i) {
+    EXPECT_EQ(queue.size(), NUM_EVENTS - i);
+    auto result = queue.try_dequeue();
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->seqNum_, i);
+  }
+  
+  EXPECT_EQ(queue.size(), 0);
+  EXPECT_TRUE(queue.empty());
+}
+
+// Test 28: Multiple Queue Reset
+TEST_F(OrderedMPMCQueueTest, MultipleQueueReset) {
+  for (int cycle = 0; cycle < 5; ++cycle) {
+    // Fill queue
+    for (size_t i = 0; i < 20; ++i) {
+      ASSERT_TRUE(queue.try_enqueue(TestEvent(i, i)));
+    }
+    
+    // Consume some
+    for (size_t i = 0; i < 10; ++i) {
+      auto result = queue.try_dequeue();
+      ASSERT_TRUE(result.has_value());
+      EXPECT_EQ(result->seqNum_, i);
+    }
+    
+    // Reset should clear everything
+    queue.reset();
+    EXPECT_TRUE(queue.empty());
+    EXPECT_EQ(queue.size(), 0);
+  }
+}
+
+// Test 29: Concurrent External Ack
+TEST_F(OrderedMPMCQueueTest, ConcurrentExternalAck) {
+  static constexpr size_t NUM_EVENTS = 100;
+  
+  // Enqueue events
+  for (size_t i = 0; i < NUM_EVENTS; ++i) {
+    ASSERT_TRUE(queue.try_enqueue(TestEvent(i, i)));
+  }
+  
+  std::vector<std::thread> workers;
+  std::atomic<size_t> processed_count{0};
+  
+  // Multiple workers dequeue and process
+  for (int w = 0; w < 4; ++w) {
+    workers.emplace_back([&]() {
+      while (processed_count.load() < NUM_EVENTS) {
+        TestEvent event;
+        if (queue.try_dequeue(event, true)) {
+          // Simulate processing time
+          std::this_thread::sleep_for(std::chrono::microseconds(10));
+          queue.mark_processed(event.seqNum_);
+          processed_count.fetch_add(1);
+        } else {
+          std::this_thread::yield();
+        }
+      }
+    });
+  }
+  
+  for (auto& w : workers) {
+    w.join();
+  }
+  
+  EXPECT_EQ(processed_count.load(), NUM_EVENTS);
+  EXPECT_TRUE(queue.empty());
+}
+
+// Test 30: Performance Stress Test
+TEST_F(OrderedMPMCQueueTest, PerformanceStressTest) {
+  static constexpr size_t STRESS_EVENTS = 1000;
+  
+  auto start_time = std::chrono::high_resolution_clock::now();
+  
+  std::thread producer([&]() {
+    for (size_t i = 0; i < STRESS_EVENTS; ++i) {
+      while (!queue.try_enqueue(TestEvent(i, i))) {
+        std::this_thread::yield();
+      }
+    }
+  });
+  
+  std::thread consumer([&]() {
+    size_t consumed = 0;
+    while (consumed < STRESS_EVENTS) {
+      auto result = queue.try_dequeue();
+      if (result.has_value()) {
+        EXPECT_EQ(result->seqNum_, consumed);
+        consumed++;
+      } else {
+        std::this_thread::yield();
+      }
+    }
+  });
+  
+  producer.join();
+  consumer.join();
+  
+  auto end_time = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+  
+  // Should complete within reasonable time (less than 5 seconds)
+  EXPECT_LT(duration.count(), 5000);
+  EXPECT_TRUE(queue.empty());
+}
+
+// Test 31: Queue Recovery After Errors
+TEST_F(OrderedMPMCQueueTest, QueueRecoveryAfterErrors) {
+  // Fill queue and try to overfill
+  for (size_t i = 0; i < QUEUE_CAPACITY; ++i) {
+    ASSERT_TRUE(queue.try_enqueue(TestEvent(i, i)));
+  }
+  
+  // These should fail
+  for (int i = 0; i < 10; ++i) {
+    EXPECT_FALSE(queue.try_enqueue(TestEvent(QUEUE_CAPACITY + i, i)));
+  }
+  
+  // Queue should still be functional
+  EXPECT_TRUE(queue.full());
+  EXPECT_EQ(queue.size(), QUEUE_CAPACITY);
+  
+  // Should be able to consume normally
+  for (size_t i = 0; i < 10; ++i) {
+    auto result = queue.try_dequeue();
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->seqNum_, i);
+  }
+  
+  // Should be able to add new items
+  for (size_t i = 0; i < 10; ++i) {
+    ASSERT_TRUE(queue.try_enqueue(TestEvent(QUEUE_CAPACITY + i, i)));
+  }
+}
+
 // Test 12: Multiple Publishers and Consumers with Random Delays
 TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
   static constexpr size_t NUM_PUBLISHERS = 4;
@@ -1036,6 +1551,52 @@ TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
                                    << " but got " << dequeue_order[i];
   }
 
+}
+
+// Test 50: External Acknowledgment Memory Safety
+TEST_F(OrderedMPMCQueueTest, ExternalAckMemorySafety) {
+  // Test that dequeue and mark_processed work together correctly
+  // and handle memory safely when events are processed out of dequeue order
+  
+  static constexpr size_t NUM_EVENTS = 10;
+  std::vector<TestEvent> dequeued_events;
+  
+  // Enqueue events
+  for (size_t i = 0; i < NUM_EVENTS; ++i) {
+    ASSERT_TRUE(queue.try_enqueue(TestEvent(i, i * 10)));
+  }
+  
+  // Dequeue events normally
+  for (size_t i = 0; i < NUM_EVENTS; ++i) {
+    TestEvent event;
+    bool success = queue.try_dequeue(event);
+    ASSERT_TRUE(success);
+    EXPECT_EQ(event.seqNum_, i);
+    EXPECT_EQ(event.data_, i * 10);
+    dequeued_events.push_back(event);
+  }
+  
+  // Manually mark some events as processed to test external ack behavior
+  for (size_t i = 0; i < NUM_EVENTS; ++i) {
+    queue.mark_processed(i);
+  }
+  
+  // Queue should be empty after processing
+  EXPECT_TRUE(queue.empty());
+  EXPECT_EQ(queue.size(), 0);
+  
+  // Verify we can still use the dequeued events (no use-after-free)
+  for (size_t i = 0; i < NUM_EVENTS; ++i) {
+    EXPECT_EQ(dequeued_events[i].seqNum_, i);
+    EXPECT_EQ(dequeued_events[i].data_, i * 10);
+  }
+  
+  // Test that we can add new events after the processing cycle
+  ASSERT_TRUE(queue.try_enqueue(TestEvent(NUM_EVENTS, 999)));
+  TestEvent final_event;
+  ASSERT_TRUE(queue.try_dequeue(final_event));
+  EXPECT_EQ(final_event.seqNum_, NUM_EVENTS);
+  EXPECT_EQ(final_event.data_, 999);
 }
 
 
