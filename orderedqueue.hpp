@@ -207,14 +207,17 @@ class OrderedMPMCQueue {
       if (ready) {
         EventType* evt = node.event.load(std::memory_order_acquire);
         if (evt && evt->seqNum_ == currentReadSeqNum) {
-          // Found the correct event, proceed with processing
+          // Found the correct event, record dequeue order and proceed
+          {
+            std::lock_guard<std::mutex> lock(dequeue_mut);
+            dequeue_order_.push_back(currentReadSeqNum);
+          }
           goto process_event;
         }
       }
       if (retry == 999) {
         // Failed to get the event - need to restore nextToConsume since we claimed it
         nextToConsume_.store(currentReadSeqNum, std::memory_order_release);
-        
         return std::nullopt;
       }
       std::this_thread::yield();

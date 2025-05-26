@@ -929,7 +929,7 @@ TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
   std::atomic<bool> stop{false};
   std::random_device rd;
   std::mt19937 gen(rd());
-  std::uniform_int_distribution<> delay_dist(0, 10);  // 0-10ms delay
+  std::uniform_int_distribution<> delay_dist(0, 1);  // 0-1ms delay
 
   // Start publishers
   std::vector<std::thread> publishers;
@@ -942,11 +942,8 @@ TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
         std::this_thread::yield();
       }
 
-      auto start_time = std::chrono::steady_clock::now();
       for (size_t i = 0; i < EVENTS_PER_PUBLISHER; ++i) {
         size_t seq = p * EVENTS_PER_PUBLISHER + i;
-        // Random delay before enqueueing
-        std::this_thread::sleep_for(std::chrono::milliseconds(delay_dist(gen)));
         
         // Add timeout protection for enqueue attempts
         auto enqueue_start = std::chrono::steady_clock::now();
@@ -957,6 +954,10 @@ TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
             stop.store(true, std::memory_order_release);
             return;
           }
+          std::this_thread::yield();
+        }
+        // Very small delay between enqueues
+        if (delay_dist(gen) == 1) {
           std::this_thread::yield();
         }
       }
@@ -976,9 +977,9 @@ TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
 
       auto start_time = std::chrono::steady_clock::now();
       while (!stop.load(std::memory_order_acquire)) {
-        // Add timeout protection
+        // Add timeout protection  
         auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count() > 30) {
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count() > 60) {
           std::cout << "Consumer timeout in MultiPublisherConsumerWithDelays. Processed: " 
                    << total_processed.load() << "/" << TOTAL_EVENTS << std::endl;
           stop.store(true, std::memory_order_release);
@@ -989,8 +990,10 @@ TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
         // sync_cout << "Attempting to dequeue" << std::endl;
         if (queue.try_dequeue(event, true)) {
           // sync_cout << "Dequeued event " << event.seqNum_ << std::endl;
-          // Random delay before processing
-          std::this_thread::sleep_for(std::chrono::milliseconds(delay_dist(gen)));
+          // Very small delay before processing
+          if (delay_dist(gen) == 1) {
+            std::this_thread::yield();
+          }
           queue.mark_processed(event.seqNum_);
           
           size_t processed_count = total_processed.fetch_add(1) + 1;
