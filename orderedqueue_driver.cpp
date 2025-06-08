@@ -56,14 +56,6 @@ auto main(int argc, char** argv) -> int {
 
   std::atomic<bool> running{true};
 
-  std::vector<std::size_t> seqNumbers(num_producers);
-  std::iota(seqNumbers.begin(), seqNumbers.end(), 0);
-  std::random_shuffle(seqNumbers.begin(), seqNumbers.end());
-  std::cout << "Sequence number order\n";
-  std::copy(seqNumbers.begin(), seqNumbers.end(),
-            std::ostream_iterator<std::size_t>(std::cout, " "));
-  std::cout << std::endl;
-
   std::vector<std::thread> producers, consumers;
 
   auto produce = [&q, &running](std::string p, unsigned long s1, unsigned long s2) {
@@ -77,8 +69,13 @@ auto main(int argc, char** argv) -> int {
 
   if (mode == runtime::async) {
 
+    // Random ordering of producers
+    std::vector<std::size_t> producerOrder(num_producers);
+    std::iota(producerOrder.begin(), producerOrder.end(), 0);
+    std::shuffle(producerOrder.begin(), producerOrder.end(), gen);
+    
     std::thread timer([&running](){
-			std::this_thread::sleep_for(std::chrono::seconds(2)); 
+			std::this_thread::sleep_for(std::chrono::seconds(8)); 
 			running = false;
 		      });
     timer.detach();
@@ -90,22 +87,17 @@ auto main(int argc, char** argv) -> int {
 	  publish(*found);
 	  q->mark_processed(found->seqNum_);
 	}
-	/*
-	bool found = q->try_dequeue(e, true);
-	if (found) {
-	  publish(e);
-	  q->mark_processed(e.seqNum_);
-	}
-	*/
       }
     };
     
     for(std::size_t i=0; i<num_producers; ++i) {
+      std::size_t producer_num = producerOrder[i];
       std::string payload = "payload " + std::to_string(i);
       producers.push_back(std::thread(produce, 
 				      payload, 
-				      (i) * num_messages_per_producer,
-				      (i+1) * num_messages_per_producer));
+				      (producer_num) * num_messages_per_producer,
+				      (producer_num + 1) * num_messages_per_producer));
+      std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
     for(std::size_t i=0; i<num_producers; ++i) {
@@ -123,6 +115,17 @@ auto main(int argc, char** argv) -> int {
 
 
   } else {
+
+    // Create random ordering of sequence numbers
+    std::vector<std::size_t> seqNumbers(num_producers);
+    std::iota(seqNumbers.begin(), seqNumbers.end(), 0);
+    std::shuffle(seqNumbers.begin(), seqNumbers.end(), gen);
+    std::cout << "Sequence number order\n";
+    std::copy(seqNumbers.begin(), seqNumbers.end(),
+	      std::ostream_iterator<std::size_t>(std::cout, " "));
+    std::cout << std::endl;
+
+
     for (std::size_t i = 0; i < num_producers; ++i) {
       unsigned long seqNumber = seqNumbers[i];
       std::string payload = "payload " + std::to_string(seqNumber);

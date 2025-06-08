@@ -25,6 +25,8 @@
 #define DEBUG
 #undef DEBUG
 
+const int NUM_RETRY_DEQUEUE = 10;
+
 using namespace Numerics;
 using namespace Utils;
 using namespace std::chrono_literals;
@@ -253,7 +255,7 @@ class OrderedMPMCQueue {
 #ifdef DEBUG
     sync_cout << "[DEBUG][T" << thread_id << "] Starting retry loop to wait for correct event" << std::endl;
 #endif
-    for (int retry = 0; retry < 1000; ++retry) {
+    for (int retry = 0; retry < NUM_RETRY_DEQUEUE; ++retry) {
       bool ready = node.ready.load(std::memory_order_acquire);
       EventType* evt = node.event.load(std::memory_order_acquire);
       
@@ -294,7 +296,7 @@ class OrderedMPMCQueue {
         }
       }
       
-      if (retry == 999) {
+      if (retry == -1 + NUM_RETRY_DEQUEUE) {
 #ifdef DEBUG
         sync_cout << "[DEBUG][T" << thread_id << "] Failed to get event after 10000 retries - attempting to restore nextToConsume_ to " << currentReadSeqNum << std::endl;
 #endif
