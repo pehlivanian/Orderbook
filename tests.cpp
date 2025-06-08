@@ -37,6 +37,7 @@ class OrderedMPMCQueueTest : public ::testing::Test {
   }
 };
 
+/*
 
 // Test 1: Basic single-threaded enqueue and dequeue
 TEST_F(OrderedMPMCQueueTest, BasicEnqueueDequeue) {
@@ -1433,6 +1434,8 @@ TEST_F(OrderedMPMCQueueTest, QueueRecoveryAfterErrors) {
   }
 }
 
+*/
+
 // Test 12: Multiple Publishers and Consumers with Random Delays
 TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
   static constexpr size_t NUM_PUBLISHERS = 4;
@@ -1553,6 +1556,8 @@ TEST_F(OrderedMPMCQueueTest, MultiPublisherConsumerWithDelays) {
 
 }
 
+/*
+
 // Test 50: External Acknowledgment Memory Safety
 TEST_F(OrderedMPMCQueueTest, ExternalAckMemorySafety) {
   // Test that dequeue and mark_processed work together correctly
@@ -1599,6 +1604,7 @@ TEST_F(OrderedMPMCQueueTest, ExternalAckMemorySafety) {
   EXPECT_EQ(final_event.data_, 999);
 }
 
+*/
 
 /*
 

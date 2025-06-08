@@ -246,7 +246,7 @@ class OrderedMPMCQueue {
 #ifdef DEBUG
     sync_cout << "[DEBUG][T" << thread_id << "] Starting retry loop to wait for correct event" << std::endl;
 #endif
-    for (int retry = 0; retry < 10000; ++retry) {
+    for (int retry = 0; retry < 1000; ++retry) {
       bool ready = node.ready.load(std::memory_order_acquire);
       EventType* evt = node.event.load(std::memory_order_acquire);
       
@@ -287,7 +287,7 @@ class OrderedMPMCQueue {
         }
       }
       
-      if (retry == 9999) {
+      if (retry == 999) {
 #ifdef DEBUG
         sync_cout << "[DEBUG][T" << thread_id << "] Failed to get event after 10000 retries - attempting to restore nextToConsume_ to " << currentReadSeqNum << std::endl;
 #endif
