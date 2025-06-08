@@ -112,6 +112,13 @@ struct eventLOBSTER {
   char direction_;
 };
 
+  struct boilerplateEvent {
+    unsigned long seqNum_;
+    double time_;
+    short eventType_;
+    float payload_;
+  };
+
 using TradesType = std::vector<trade>;
 using AckTrades = std::pair<ack, std::optional<TradesType>>;
 
