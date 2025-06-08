@@ -195,10 +195,17 @@ class OrderedMPMCQueue {
         sync_cout << "[DEBUG][T" << thread_id << "] Previous sequence not processed yet" << std::endl;
 #endif
         
-        // If the previous slot is empty, the sequence was processed and cleared
+        // If the previous slot is empty, check if it was processed or never enqueued
         if (!prevEvent) {
+          // If ready is false, the slot was never used - sequence not enqueued yet
+          if (!prevReady) {
 #ifdef DEBUG
-          sync_cout << "[DEBUG][T" << thread_id << "] Previous slot is empty - sequence was processed and cleared, continuing" << std::endl;
+            sync_cout << "[DEBUG][T" << thread_id << "] Previous slot empty and not ready - sequence " << prevSeqNum << " not enqueued yet, blocking" << std::endl;
+#endif
+            return std::nullopt;
+          }
+#ifdef DEBUG
+          sync_cout << "[DEBUG][T" << thread_id << "] Previous slot is empty but was ready - sequence was processed and cleared, continuing" << std::endl;
 #endif
         } else if (prevEvent->seqNum_ == prevSeqNum) {
 #ifdef DEBUG
