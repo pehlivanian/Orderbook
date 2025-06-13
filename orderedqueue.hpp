@@ -40,9 +40,11 @@ class OrderedMPMCQueue {
   static constexpr std::size_t MASK = Capacity - 1;
 
   struct Node {
-    std::atomic<EventType*> event{nullptr};
+    EventType event;
     std::atomic<bool> ready{false};
     std::atomic<bool> processed{false};
+    
+    Node() : event{}, ready{false}, processed{false} {}
   };
 
   static constexpr size_t CACHE_LINE_SIZE = 64;
@@ -60,14 +62,7 @@ class OrderedMPMCQueue {
  public:
   OrderedMPMCQueue() = default;
 
-  ~OrderedMPMCQueue() {
-    for (auto& node : buffer_) {
-      EventType* event = node.event.load(std::memory_order_relaxed);
-      if (event) {
-        delete event;
-      }
-    }
-  }
+  ~OrderedMPMCQueue() = default;
 
   OrderedMPMCQueue(const OrderedMPMCQueue&) = delete;
   OrderedMPMCQueue& operator=(const OrderedMPMCQueue&) = delete;
@@ -95,31 +90,24 @@ class OrderedMPMCQueue {
     Node& node = buffer_[idx];
 
     if (node.ready.load(std::memory_order_acquire)) {
-      EventType* oldEvent = node.event.load(std::memory_order_relaxed);
-      if (oldEvent && oldEvent->seqNum_ >= seqNum) {
-        return false;  // Slot still in use
+      if (node.event.seqNum_ >= seqNum) {
+        // Slot still in use
+	return false;
       }
     }
 
-    EventType* newEvent = new EventType(std::move(event));
-    
     // First, reset the node state
     node.ready.store(false, std::memory_order_release);
     node.processed.store(false, std::memory_order_release);
     
-    // Then set the event
-    EventType* expected = nullptr;
-    if (!node.event.compare_exchange_strong(expected, newEvent, std::memory_order_release,
-                                            std::memory_order_relaxed)) {
-      delete newEvent;
-      return false;
-    }
+    // Then set the event directly (no allocation needed)
+    node.event = std::move(event);
 
     // Finally, mark as ready (this is the signal that the event is available)
     node.ready.store(true, std::memory_order_release);
     writeCount_.fetch_add(1, std::memory_order_release);
 
-    // sync_cout << "Enqueued event with seqNum_: " << newEvent->seqNum_ << std::endl;
+    // sync_cout << "Enqueued event with seqNum_: " << node.event.seqNum_ << std::endl;
 
     return true;
   }
@@ -155,14 +143,12 @@ class OrderedMPMCQueue {
     Node& node = buffer_[idx];
     bool nodeReady = node.ready.load(std::memory_order_acquire);
     bool nodeProcessed = node.processed.load(std::memory_order_acquire);
-    EventType* nodeEvent = node.event.load(std::memory_order_acquire);
     
 #ifdef DEBUG
     sync_cout << "[DEBUG][T" << thread_id << "] Current node[" << idx << "]: ready=" << nodeReady 
-              << ", processed=" << nodeProcessed 
-              << ", event=" << (nodeEvent ? "exists" : "null");
-    if (nodeEvent) {
-      sync_cout << " (seqNum=" << nodeEvent->seqNum_ << ")";
+              << ", processed=" << nodeProcessed;
+    if (nodeReady) {
+      sync_cout << " (seqNum=" << node.event.seqNum_ << ")";
     }
     sync_cout << std::endl;
 #endif
@@ -179,15 +165,13 @@ class OrderedMPMCQueue {
       
       // Check if the previous sequence was processed
       bool prevProcessed = prevNode.processed.load(std::memory_order_acquire);
-      EventType* prevEvent = prevNode.event.load(std::memory_order_acquire);
       bool prevReady = prevNode.ready.load(std::memory_order_acquire);
       
 #ifdef DEBUG
       sync_cout << "[DEBUG][T" << thread_id << "] Previous node[" << prevIdx << "]: ready=" << prevReady 
-                << ", processed=" << prevProcessed 
-                << ", event=" << (prevEvent ? "exists" : "null");
-      if (prevEvent) {
-        sync_cout << " (seqNum=" << prevEvent->seqNum_ << ")";
+                << ", processed=" << prevProcessed;
+      if (prevReady) {
+        sync_cout << " (seqNum=" << prevNode.event.seqNum_ << ")";
       }
       sync_cout << std::endl;
 #endif
@@ -197,26 +181,20 @@ class OrderedMPMCQueue {
         sync_cout << "[DEBUG][T" << thread_id << "] Previous sequence not processed yet" << std::endl;
 #endif
         
-        // If the previous slot is empty, check if it was processed or never enqueued
-        if (!prevEvent) {
-          // If ready is false, the slot was never used - sequence not enqueued yet
-          if (!prevReady) {
+        // If the previous slot is not ready, the sequence wasn't enqueued yet
+        if (!prevReady) {
 #ifdef DEBUG
-            sync_cout << "[DEBUG][T" << thread_id << "] Previous slot empty and not ready - sequence " << prevSeqNum << " not enqueued yet, blocking" << std::endl;
+          sync_cout << "[DEBUG][T" << thread_id << "] Previous slot not ready - sequence " << prevSeqNum << " not enqueued yet, blocking" << std::endl;
 #endif
-            return std::nullopt;
-          }
-#ifdef DEBUG
-          sync_cout << "[DEBUG][T" << thread_id << "] Previous slot is empty but was ready - sequence was processed and cleared, continuing" << std::endl;
-#endif
-        } else if (prevEvent->seqNum_ == prevSeqNum) {
+          return std::nullopt;
+        } else if (prevNode.event.seqNum_ == prevSeqNum) {
 #ifdef DEBUG
           sync_cout << "[DEBUG][T" << thread_id << "] Waiting for exact previous sequence " << prevSeqNum << " to be processed - blocking" << std::endl;
 #endif
           return std::nullopt;
         } else {
 #ifdef DEBUG
-          sync_cout << "[DEBUG][T" << thread_id << "] Previous slot contains different sequence (" << prevEvent->seqNum_ 
+          sync_cout << "[DEBUG][T" << thread_id << "] Previous slot contains different sequence (" << prevNode.event.seqNum_ 
                     << " != " << prevSeqNum << ") - wraparound case, continuing" << std::endl;
 #endif
         }
@@ -257,21 +235,19 @@ class OrderedMPMCQueue {
 #endif
     for (int retry = 0; retry < NUM_RETRY_DEQUEUE; ++retry) {
       bool ready = node.ready.load(std::memory_order_acquire);
-      EventType* evt = node.event.load(std::memory_order_acquire);
       
 #ifdef DEBUG
       if (retry % 100 == 0 || retry < 10 || ready) {
-        sync_cout << "[DEBUG][T" << thread_id << "] Retry " << retry << ": ready=" << ready 
-                  << ", event=" << (evt ? "exists" : "null");
-        if (evt) {
-          sync_cout << " (seqNum=" << evt->seqNum_ << ")";
+        sync_cout << "[DEBUG][T" << thread_id << "] Retry " << retry << ": ready=" << ready;
+        if (ready) {
+          sync_cout << " (seqNum=" << node.event.seqNum_ << ")";
         }
         sync_cout << std::endl;
       }
 #endif
       
       if (ready) {
-        if (evt && evt->seqNum_ == currentReadSeqNum) {
+        if (node.event.seqNum_ == currentReadSeqNum) {
 #ifdef DEBUG
           sync_cout << "[DEBUG][T" << thread_id << "] Found correct event at retry " << retry << ", proceeding to process" << std::endl;
 #endif
@@ -284,14 +260,10 @@ class OrderedMPMCQueue {
 #endif
           }
           goto process_event;
-        } else if (evt) {
-#ifdef DEBUG
-          sync_cout << "[DEBUG][T" << thread_id << "] Event exists but wrong sequence: got " << evt->seqNum_ 
-                    << ", expected " << currentReadSeqNum << std::endl;
-#endif
         } else {
 #ifdef DEBUG
-          sync_cout << "[DEBUG][T" << thread_id << "] Node is ready but event is null" << std::endl;
+          sync_cout << "[DEBUG][T" << thread_id << "] Event exists but wrong sequence: got " << node.event.seqNum_ 
+                    << ", expected " << currentReadSeqNum << std::endl;
 #endif
         }
       }
@@ -327,31 +299,28 @@ class OrderedMPMCQueue {
     }
     
   process_event:
-    EventType* evt = node.event.load(std::memory_order_acquire);
 #ifdef DEBUG
-    sync_cout << "[DEBUG][T" << thread_id << "] Processing event: seqNum=" << evt->seqNum_ << ", external_ack=" << external_ack << std::endl;
+    sync_cout << "[DEBUG][T" << thread_id << "] Processing event: seqNum=" << node.event.seqNum_ << ", external_ack=" << external_ack << std::endl;
 #endif
 
     // Move the event data
-    EventType result = *evt;  // Copy the event before deleting
+    EventType result = node.event;  // Copy the event
 #ifdef DEBUG
     sync_cout << "[DEBUG][T" << thread_id << "] Copied event data" << std::endl;
 #endif
     
     if (!external_ack) {
 #ifdef DEBUG
-      sync_cout << "[DEBUG][T" << thread_id << "] No external ack - deleting event and marking processed immediately" << std::endl;
+      sync_cout << "[DEBUG][T" << thread_id << "] No external ack - marking processed immediately" << std::endl;
 #endif
-      // Delete immediately and mark processed
-      delete evt;
-      node.event.store(nullptr, std::memory_order_release);
+      // Mark processed immediately
       node.ready.store(false, std::memory_order_release);
       mark_processed(currentReadSeqNum);
     } else {
 #ifdef DEBUG
-      sync_cout << "[DEBUG][T" << thread_id << "] External ack mode - only setting ready=false, will delete in mark_processed" << std::endl;
+      sync_cout << "[DEBUG][T" << thread_id << "] External ack mode - only setting ready=false, will mark processed later" << std::endl;
 #endif
-      // Don't delete yet - mark_processed will do it
+      // Don't mark processed yet - mark_processed will do it
       node.ready.store(false, std::memory_order_release);
     }
 
@@ -365,16 +334,8 @@ class OrderedMPMCQueue {
     const size_t idx = getIndex(seqNum);
     Node& node = buffer_[idx];
 
-    // Delete the event if it's still there (external_ack case)
-    EventType* evt = node.event.load(std::memory_order_acquire);
-    if (evt) {
-      delete evt;
-      node.event.store(nullptr, std::memory_order_release);
-    }
-
     // Mark this node as processed
     node.processed.store(true, std::memory_order_release);
-
 
 #ifdef DEBUG
     sync_cout << "Marked processed event " << seqNum << std::endl;
@@ -424,11 +385,6 @@ class OrderedMPMCQueue {
   void reset() {
     // Clear all nodes completely
     for (auto& node : buffer_) {
-      EventType* event = node.event.load(std::memory_order_relaxed);
-      if (event) {
-        delete event;
-      }
-      node.event.store(nullptr, std::memory_order_release);
       node.ready.store(false, std::memory_order_release);
       node.processed.store(false, std::memory_order_release);
     }

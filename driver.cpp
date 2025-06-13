@@ -15,6 +15,11 @@ void process_order(Message::order&& o) {
   sync_cout << "Processed order: " << o.seqNum_ << std::endl;
 }
 
+// Staging
+// 
+// SPMCQueue [NUM_CONSUMERS] --> OrderedMPMCQueue [NUM_SERIALIZERS] --> terminus
+//
+
 auto main(int argc, char** argv) -> int {
   UNUSED(argc);
   UNUSED(argv);

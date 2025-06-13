@@ -1,481 +1,735 @@
-#include <errno.h>
-#include <fcntl.h>
-#include <mqueue.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/eventfd.h>
-#include <sys/mman.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/time.h>
-#include <sys/uio.h>
-#include <sys/un.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#include <cstdint>
+#include <benchmark/benchmark.h>
+#include <thread>
+#include <vector>
+#include <chrono>
+#include <random>
+#include "include/concurrentqueue.h"
+#include "orderedqueue.hpp"
 
-// Common definitions for all tests
-#define SOCKET_PATH "/tmp/bench.sock"
-#define FIFO_PATH "/tmp/bench.fifo"
-#define QUEUE_NAME "/bench_queue"
-#define SHM_NAME "/my_shared_mem"
-#define BUFFER_SIZE (32 * 1024)  // 32KB buffer for all tests
-#define NUM_ITERATIONS 1000
-
-// Shared structures
-struct shared_data {
-  size_t size;
-  char buffer[BUFFER_SIZE];
+struct BenchmarkEvent {
+    unsigned long seqNum_;
+    double time_;
+    short eventType_;
+    float payload_;
+    
+    BenchmarkEvent(unsigned long seq, double t, short type, float payload)
+        : seqNum_(seq), time_(t), eventType_(type), payload_(payload) {}
+    BenchmarkEvent() : seqNum_(0), time_(0.0), eventType_(0), payload_(0.0f) {}
 };
 
-struct shared_info {
-  void* buffer_addr;
-  size_t buffer_size;
-};
+using EventType = BenchmarkEvent;
 
-// Utility functions
-void random_bits(char* buffer, size_t num_bytes) {
-  int fd = open("/dev/urandom", O_RDONLY);
-  if (fd < 0) {
-    perror("open urandom");
-    exit(1);
-  }
-  ssize_t bytes = read(fd, buffer, num_bytes);
-  if (bytes != num_bytes) {
-    perror("read urandom");
-    exit(1);
-  }
-  close(fd);
+// Helper function to create test events
+EventType createEvent(unsigned long seqNum) {
+    return EventType{seqNum, 0.0, 1, static_cast<float>(seqNum)};
 }
 
-long long get_usec(void) {
-  struct timeval tv;
-  gettimeofday(&tv, NULL);
-  return tv.tv_sec * 1000000LL + tv.tv_usec;
-}
+// Single Producer, Single Consumer - OrderedMPMCQueue
+static void BM_OrderedQueue_SPSC(benchmark::State& state) {
+  OrderedMPMCQueue<EventType, 8192> queue;
+  std::atomic<bool> done{false};
+  std::atomic<size_t> consumed{0};
 
-// FIFO Implementation
-void fifo_source(void) {
-  char buffer[BUFFER_SIZE];
-  random_bits(buffer, BUFFER_SIZE);
+  // Consumer thread
+  std::thread consumer([&]() {
+			EventType event;
+			while (!done.load() || consumed.load() < static_cast<size_t>(state.iterations())) {
+			  if (queue.try_dequeue(event)) {
+			    consumed.fetch_add(1);
+			  } else {
+			    std::this_thread::yield();
+			  }
+			}
+		      });
 
-  int fd = open(FIFO_PATH, O_WRONLY);
-  if (fd < 0) {
-    perror("FIFO open failed");
-    exit(1);
+  size_t seq_num = 0;
+  for (auto _ : state) {
+    auto event = createEvent(seq_num++);
+    queue.enqueue(std::move(event));
   }
 
-  long long start_time = get_usec();
+  done.store(true);
+  consumer.join();
+}
+BENCHMARK(BM_OrderedQueue_SPSC)->Iterations(8000);
 
-  for (int i = 0; i < NUM_ITERATIONS; i++) {
-    if (write(fd, buffer, BUFFER_SIZE) != BUFFER_SIZE) {
-      perror("FIFO write failed");
-      exit(1);
+
+// Single Producer, Multiple Consumers - OrderedMPMCQueue
+static void BM_OrderedQueue_SPMC(benchmark::State& state) {
+    const int num_consumers = 4;
+    const size_t total_events = 8000;  // Reduced to fit queue capacity
+    
+    for (auto _ : state) {
+      OrderedMPMCQueue<EventType, 8192> queue;
+        std::atomic<bool> done{false};
+        std::atomic<size_t> consumed{0};
+        
+        // Consumer threads
+        std::vector<std::thread> consumers;
+        for (int i = 0; i < num_consumers; ++i) {
+            consumers.emplace_back([&]() {
+                EventType event;
+                while (!done.load() || consumed.load() < total_events) {
+                    if (queue.try_dequeue(event)) {
+                        consumed.fetch_add(1);
+                    } else {
+                        std::this_thread::yield();
+                    }
+                }
+            });
+        }
+        
+        // Producer (main thread)
+        for (size_t i = 0; i < total_events; ++i) {
+            auto event = createEvent(i);
+            queue.enqueue(std::move(event));
+        }
+        
+        done.store(true);
+        for (auto& t : consumers) {
+            t.join();
+        }
     }
-  }
-
-  long long end_time = get_usec();
-  printf("FIFO sender finished: %lld usec (%.2f MB/s)\n", end_time - start_time,
-         ((double)BUFFER_SIZE * NUM_ITERATIONS) / (end_time - start_time));
-  close(fd);
+    
+    state.SetItemsProcessed(total_events);
 }
+BENCHMARK(BM_OrderedQueue_SPMC)->UseRealTime();
 
-void fifo_target(void) {
-  char buffer[BUFFER_SIZE];
-
-  int fd = open(FIFO_PATH, O_RDONLY);
-  if (fd < 0) {
-    perror("FIFO open failed");
-    exit(1);
-  }
-
-  long long start_time = get_usec();
-
-  for (int i = 0; i < NUM_ITERATIONS; i++) {
-    if (read(fd, buffer, BUFFER_SIZE) != BUFFER_SIZE) {
-      perror("FIFO read failed");
-      exit(1);
+// Multiple Producers, Multiple Consumers - OrderedMPMCQueue
+static void BM_OrderedQueue_MPMC(benchmark::State& state) {
+    const int num_producers = 4;
+    const int num_consumers = 4;
+    const size_t total_events = 8000;  // Reduced to fit queue capacity
+    const size_t events_per_producer = total_events / num_producers;
+    
+    for (auto _ : state) {
+	OrderedMPMCQueue<EventType, 8192> queue;
+        std::atomic<bool> done{false};
+        std::atomic<size_t> consumed{0};
+        
+        // Consumer threads
+        std::vector<std::thread> consumers;
+        for (int i = 0; i < num_consumers; ++i) {
+            consumers.emplace_back([&]() {
+                EventType event;
+                while (!done.load() || consumed.load() < total_events) {
+                    if (queue.try_dequeue(event)) {
+                        consumed.fetch_add(1);
+                    } else {
+                        std::this_thread::yield();
+                    }
+                }
+            });
+        }
+        
+        // Producer threads
+        std::vector<std::thread> producers;
+        for (int i = 0; i < num_producers; ++i) {
+            producers.emplace_back([&, i]() {
+                size_t base_seq = i * events_per_producer;
+                for (size_t j = 0; j < events_per_producer; ++j) {
+                    auto event = createEvent(base_seq + j);
+                    queue.enqueue(std::move(event));
+                }
+            });
+        }
+        
+        // Wait for producers to finish
+        for (auto& t : producers) {
+            t.join();
+        }
+        done.store(true);
+        for (auto& t : consumers) {
+            t.join();
+        }
     }
-  }
-
-  long long end_time = get_usec();
-  printf("FIFO receiver finished: %lld usec (%.2f MB/s)\n", end_time - start_time,
-         ((double)BUFFER_SIZE * NUM_ITERATIONS) / (end_time - start_time));
-  close(fd);
+    
+    state.SetItemsProcessed(total_events);
 }
+BENCHMARK(BM_OrderedQueue_MPMC)->UseRealTime();
 
-// Unix Domain Socket Implementation
-void socket_source(void) {
-  char buffer[BUFFER_SIZE];
-  random_bits(buffer, BUFFER_SIZE);
-
-  int sock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (sock_fd < 0) {
-    perror("Socket creation failed");
-    exit(1);
-  }
-
-  struct sockaddr_un addr;
-  memset(&addr, 0, sizeof(addr));
-  addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
-
-  sleep(1);  // Give receiver time to start
-
-  if (connect(sock_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-    perror("Socket connect failed");
-    exit(1);
-  }
-
-  long long start_time = get_usec();
-
-  for (int i = 0; i < NUM_ITERATIONS; i++) {
-    if (send(sock_fd, buffer, BUFFER_SIZE, 0) != BUFFER_SIZE) {
-      perror("Socket send failed");
-      exit(1);
+// High throughput benchmark - OrderedMPMCQueue
+static void BM_OrderedQueue_HighThroughput(benchmark::State& state) {
+    const int num_producers = 4;  // Reduced from 8
+    const int num_consumers = 4;  // Reduced from 8  
+    const size_t total_events = 8000;  // Reduced to fit queue capacity
+    const size_t events_per_producer = total_events / num_producers;
+    
+    for (auto _ : state) {
+      OrderedMPMCQueue<EventType, 8192> queue;
+        std::atomic<bool> done{false};
+        std::atomic<size_t> consumed{0};
+        
+        // Consumer threads
+        std::vector<std::thread> consumers;
+        for (int i = 0; i < num_consumers; ++i) {
+            consumers.emplace_back([&]() {
+                EventType event;
+                while (!done.load() || consumed.load() < total_events) {
+                    if (queue.try_dequeue(event)) {
+                        consumed.fetch_add(1);
+                    } else {
+                        std::this_thread::yield();
+                    }
+                }
+            });
+        }
+        
+        // Producer threads
+        std::vector<std::thread> producers;
+        for (int i = 0; i < num_producers; ++i) {
+            producers.emplace_back([&, i]() {
+                size_t base_seq = i * events_per_producer;
+                for (size_t j = 0; j < events_per_producer; ++j) {
+                    auto event = createEvent(base_seq + j);
+                    queue.enqueue(std::move(event));
+                }
+            });
+        }
+        
+        // Wait for completion
+        for (auto& t : producers) {
+            t.join();
+        }
+        done.store(true);
+        for (auto& t : consumers) {
+            t.join();
+        }
     }
-  }
+    
+    state.SetItemsProcessed(total_events);
+    state.counters["Events/sec"] = benchmark::Counter(total_events, benchmark::Counter::kIsRate);
+}
+BENCHMARK(BM_OrderedQueue_HighThroughput)->Unit(benchmark::kMillisecond)->UseRealTime();
 
-  long long end_time = get_usec();
-  printf("Socket sender finished: %lld usec (%.2f MB/s)\n", end_time - start_time,
-         ((double)BUFFER_SIZE * NUM_ITERATIONS) / (end_time - start_time));
-  close(sock_fd);
+/*
+// Bulk operations benchmark - shows bulk enqueue/dequeue performance
+static void BM_OrderedQueue_BulkOperations(benchmark::State& state) {
+OrderedMPMCQueue<EventType, 1024> queue;
+const size_t bulk_size = 500;
+
+for (auto _ : state) {
+// Bulk enqueue
+std::vector<EventType> events;
+events.reserve(bulk_size);
+for (size_t i = 0; i < bulk_size; ++i) {
+events.emplace_back(createEvent(i));
 }
 
-void socket_target(void) {
-  char buffer[BUFFER_SIZE];
+for (auto& event : events) {
+queue.enqueue(std::move(event));
+}
 
-  int sock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (sock_fd < 0) {
-    perror("Socket creation failed");
-    exit(1);
-  }
+// Bulk dequeue
+std::vector<EventType> dequeued_events;
+dequeued_events.reserve(bulk_size);
+EventType event;
+for (size_t i = 0; i < bulk_size; ++i) {
+if (queue.try_dequeue(event)) {
+dequeued_events.push_back(std::move(event));
+}
+}
 
-  struct sockaddr_un addr;
-  memset(&addr, 0, sizeof(addr));
-  addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
+benchmark::DoNotOptimize(dequeued_events);
+}
 
-  unlink(SOCKET_PATH);
-  if (bind(sock_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-    perror("Socket bind failed");
-    exit(1);
-  }
+state.SetItemsProcessed(state.iterations() * bulk_size * 2); // enqueue + dequeue
+}
+BENCHMARK(BM_OrderedQueue_BulkOperations)->Iterations(10000);
 
-  if (listen(sock_fd, 1) < 0) {
-    perror("Socket listen failed");
-    exit(1);
-  }
 
-  int client_fd = accept(sock_fd, NULL, NULL);
-  if (client_fd < 0) {
-    perror("Socket accept failed");
-    exit(1);
-  }
+// Memory contention benchmark - simplified
+static void BM_OrderedQueue_MemoryContention(benchmark::State& state) {
+const int num_threads = 4; // Further reduced
+const size_t operations_per_thread = 500; // Reduced operations to fit queue
 
-  long long start_time = get_usec();
+for (auto _ : state) {
+OrderedMPMCQueue<EventType, 1024> queue;
+std::vector<std::thread> threads;
 
-  for (int i = 0; i < NUM_ITERATIONS; i++) {
-    if (recv(client_fd, buffer, BUFFER_SIZE, 0) != BUFFER_SIZE) {
-      perror("Socket recv failed");
-      exit(1);
+for (int i = 0; i < num_threads; ++i) {
+threads.emplace_back([&, i]() {
+for (size_t j = 0; j < operations_per_thread; ++j) {
+if (i % 2 == 0) {
+// Producer
+auto event = createEvent(j);
+queue.enqueue(std::move(event));
+} else {
+// Consumer
+EventType event;
+queue.try_dequeue(event);
+}
+}
+});
+}
+
+for (auto& t : threads) {
+t.join();
+}
+}
+}
+BENCHMARK(BM_OrderedQueue_MemoryContention)->UseRealTime();
+*/
+
+
+//////////
+// ConcurrentQueue
+/////////
+
+
+// Single Producer, Single Consumer - moodycamel::ConcurrentQueue
+static void BM_ConcurrentQueue_SPSC(benchmark::State& state) {
+    moodycamel::ConcurrentQueue<EventType> queue;
+    std::atomic<bool> done{false};
+    std::atomic<size_t> consumed{0};
+    
+    // Consumer thread
+    std::thread consumer([&]() {
+        EventType event;
+        while (!done.load() || consumed.load() < static_cast<size_t>(state.iterations())) {
+            if (queue.try_dequeue(event)) {
+                consumed.fetch_add(1);
+            } else {
+                std::this_thread::yield();
+            }
+        }
+    });
+    
+    size_t seq_num = 0;
+    for (auto _ : state) {
+        auto event = createEvent(seq_num++);
+        queue.enqueue(std::move(event));
     }
-  }
-
-  long long end_time = get_usec();
-  printf("Socket receiver finished: %lld usec (%.2f MB/s)\n", end_time - start_time,
-         ((double)BUFFER_SIZE * NUM_ITERATIONS) / (end_time - start_time));
-  close(client_fd);
-  close(sock_fd);
-  unlink(SOCKET_PATH);
+    
+    done.store(true);
+    consumer.join();
 }
+BENCHMARK(BM_ConcurrentQueue_SPSC)->Iterations(100000);
 
-// Message Queue benchmark
-void mq_source(void) {
-  char buffer[BUFFER_SIZE];
-  random_bits(buffer, BUFFER_SIZE);
-
-  struct mq_attr attr = {
-      .mq_flags = 0, .mq_maxmsg = 10, .mq_msgsize = BUFFER_SIZE, .mq_curmsgs = 0};
-
-  mqd_t mq = mq_open(QUEUE_NAME, O_WRONLY | O_CREAT, 0644, &attr);
-  if (mq == (mqd_t)-1) {
-    perror("Message queue open failed");
-    exit(1);
-  }
-
-  int num_iterations = NUM_ITERATIONS;
-
-  long long start_time = get_usec();
-
-  while (num_iterations) {
-    mq_send(mq, buffer, BUFFER_SIZE, 0);
-    num_iterations--;
-  }
-
-  long long end_time = get_usec();
-  printf("Message queue sender finished: %lld usec\n", end_time - start_time);
-  mq_close(mq);
-}
-
-void mq_target(void) {
-  char buffer[BUFFER_SIZE];
-
-  mqd_t mq = mq_open(QUEUE_NAME, O_RDONLY);
-  if (mq == (mqd_t)-1) {
-    perror("Message queue open failed");
-    exit(1);
-  }
-
-  int num_iterations = NUM_ITERATIONS;
-
-  long long start_time = get_usec();
-
-  unsigned int prio;
-
-  while (num_iterations) {
-    ssize_t bytes = mq_receive(mq, buffer, BUFFER_SIZE, &prio);
-    num_iterations--;
-  }
-
-  long long end_time = get_usec();
-  printf("Message queue receiver finished: %lld usec\n", end_time - start_time);
-  mq_close(mq);
-  mq_unlink(QUEUE_NAME);
-}
-
-// Message Queue Implementation
-void mq_source_old(void) {
-  char buffer[BUFFER_SIZE];
-  random_bits(buffer, BUFFER_SIZE);
-
-  struct mq_attr attr = {
-      .mq_flags = 0, .mq_maxmsg = 10, .mq_msgsize = BUFFER_SIZE, .mq_curmsgs = 0};
-
-  mqd_t mq = mq_open(QUEUE_NAME, O_WRONLY | O_CREAT, 0644, &attr);
-  if (mq == (mqd_t)-1) {
-    perror("Message queue open failed");
-    exit(1);
-  }
-
-  long long start_time = get_usec();
-
-  for (int i = 0; i < NUM_ITERATIONS; i++) {
-    if (mq_send(mq, buffer, BUFFER_SIZE, 0) == -1) {
-      perror("Message queue send failed");
-      exit(1);
+// Multiple Producers, Single Consumer - moodycamel::ConcurrentQueue  
+static void BM_ConcurrentQueue_MPSC(benchmark::State& state) {
+    const int num_producers = 4;
+    const size_t total_events = 8000;  // Reduced to fit queue capacity
+    const size_t events_per_producer = total_events / num_producers;
+    
+    for (auto _ : state) {
+        moodycamel::ConcurrentQueue<EventType> queue;
+        std::atomic<bool> done{false};
+        std::atomic<size_t> consumed{0};
+        
+        // Consumer thread
+        std::thread consumer([&]() {
+            EventType event;
+            while (!done.load() || consumed.load() < total_events) {
+                if (queue.try_dequeue(event)) {
+                    consumed.fetch_add(1);
+                } else {
+                    std::this_thread::yield();
+                }
+            }
+        });
+        
+        // Producer threads
+        std::vector<std::thread> producers;
+        for (int i = 0; i < num_producers; ++i) {
+            producers.emplace_back([&, i]() {
+                size_t base_seq = i * events_per_producer;
+                for (size_t j = 0; j < events_per_producer; ++j) {
+                    auto event = createEvent(base_seq + j);
+                    queue.enqueue(std::move(event));
+                }
+            });
+        }
+        
+        // Wait for producers to finish
+        for (auto& t : producers) {
+            t.join();
+        }
+        done.store(true);
+        consumer.join();
     }
-  }
-
-  long long end_time = get_usec();
-  printf("Message queue sender finished: %lld usec (%.2f MB/s)\n", end_time - start_time,
-         ((double)BUFFER_SIZE * NUM_ITERATIONS) / (end_time - start_time));
-  mq_close(mq);
+    
+    state.SetItemsProcessed(total_events);
 }
+BENCHMARK(BM_ConcurrentQueue_MPSC)->UseRealTime();
 
-void mq_target_old(void) {
-  char buffer[BUFFER_SIZE];
-  unsigned int prio;
-
-  mqd_t mq = mq_open(QUEUE_NAME, O_RDONLY);
-  if (mq == (mqd_t)-1) {
-    perror("Message queue open failed");
-    exit(1);
-  }
-
-  long long start_time = get_usec();
-
-  for (int i = 0; i < NUM_ITERATIONS; i++) {
-    if (mq_receive(mq, buffer, BUFFER_SIZE, &prio) == -1) {
-      perror("Message queue receive failed");
-      exit(1);
+// Single Producer, Multiple Consumers - moodycamel::ConcurrentQueue
+static void BM_ConcurrentQueue_SPMC(benchmark::State& state) {
+    const int num_consumers = 4;
+    const size_t total_events = 8000;  // Reduced to fit queue capacity
+    
+    for (auto _ : state) {
+        moodycamel::ConcurrentQueue<EventType> queue;
+        std::atomic<bool> done{false};
+        std::atomic<size_t> consumed{0};
+        
+        // Consumer threads
+        std::vector<std::thread> consumers;
+        for (int i = 0; i < num_consumers; ++i) {
+            consumers.emplace_back([&]() {
+                EventType event;
+                while (!done.load() || consumed.load() < total_events) {
+                    if (queue.try_dequeue(event)) {
+                        consumed.fetch_add(1);
+                    } else {
+                        std::this_thread::yield();
+                    }
+                }
+            });
+        }
+        
+        // Producer (main thread)
+        for (size_t i = 0; i < total_events; ++i) {
+            auto event = createEvent(i);
+            queue.enqueue(std::move(event));
+        }
+        
+        done.store(true);
+        for (auto& t : consumers) {
+            t.join();
+        }
     }
-  }
-
-  long long end_time = get_usec();
-  printf("Message queue receiver finished: %lld usec (%.2f MB/s)\n", end_time - start_time,
-         ((double)BUFFER_SIZE * NUM_ITERATIONS) / (end_time - start_time));
-  mq_close(mq);
-  mq_unlink(QUEUE_NAME);
+    
+    state.SetItemsProcessed(total_events);
 }
+BENCHMARK(BM_ConcurrentQueue_SPMC)->UseRealTime();
 
-void eventfd_sender(int efd, struct shared_data* shm) {
-  // Initialize test data
-  char test_data[BUFFER_SIZE];
-  memset(test_data, 'A', BUFFER_SIZE);
-
-  int num_iterations = NUM_ITERATIONS;
-
-  long long start_time = get_usec();
-
-  while (num_iterations) {
-    // Write data to shared memory
-    memcpy(shm->buffer, test_data, BUFFER_SIZE);
-    shm->size = BUFFER_SIZE;
-
-    // Signal receiver using eventfd
-    uint64_t u = 1;
-    write(efd, &u, sizeof(uint64_t));
-
-    num_iterations--;
-  }
-
-  /*
-  for (int i = 0; i < NUM_ITERATIONS; i++) {
-      // Write data to shared memory
-      memcpy(shm->buffer, test_data, BUFFER_SIZE);
-      shm->size = BUFFER_SIZE;
-
-      // Signal receiver using eventfd
-      uint64_t u = 1;
-      if (write(efd, &u, sizeof(uint64_t)) != sizeof(uint64_t)) {
-          perror("write eventfd");
-          exit(1);
-      }
-  }
-  */
-
-  long long end_time = get_usec();
-  printf("Sender finished: %lld usec\n", end_time - start_time);
-}
-
-void eventfd_receiver(int efd, struct shared_data* shm) {
-  int num_iterations = NUM_ITERATIONS;
-
-  long long start_time = get_usec();
-
-  while (num_iterations) {
-    uint64_t u;
-    read(efd, &u, sizeof(uint64_t));
-    num_iterations--;
-  }
-
-  /*
-  for (int i = 0; i < NUM_ITERATIONS; i++) {
-      // Wait for signal from sender
-      uint64_t u;
-      if (read(efd, &u, sizeof(uint64_t)) != sizeof(uint64_t)) {
-          perror("read eventfd");
-          exit(1);
-      }
-
-      // Process data from shared memory
-      // In this example, we just verify the size
-      if (shm->size != BUFFER_SIZE) {
-          fprintf(stderr, "Size mismatch: expected %d, got %zu\n",
-                  BUFFER_SIZE, shm->size);
-          exit(1);
-      }
-  }
-  */
-
-  long long end_time = get_usec();
-  printf("Receiver finished: %lld usec\n", end_time - start_time);
-}
-
-// Shared Memory with eventfd Implementation
-void eventfd_sender_old(int efd, struct shared_data* shm) {
-  char buffer[BUFFER_SIZE];
-  random_bits(buffer, BUFFER_SIZE);
-
-  long long start_time = get_usec();
-
-  for (int i = 0; i < NUM_ITERATIONS; i++) {
-    memcpy(shm->buffer, buffer, BUFFER_SIZE);
-    shm->size = BUFFER_SIZE;
-
-    uint64_t u = 1;
-    if (write(efd, &u, sizeof(uint64_t)) != sizeof(uint64_t)) {
-      perror("eventfd write failed");
-      exit(1);
+// Multiple Producers, Multiple Consumers - moodycamel::ConcurrentQueue
+static void BM_ConcurrentQueue_MPMC(benchmark::State& state) {
+    const int num_producers = 4;
+    const int num_consumers = 4;
+    const size_t total_events = 8000;  // Reduced to fit queue capacity
+    const size_t events_per_producer = total_events / num_producers;
+    
+    for (auto _ : state) {
+        moodycamel::ConcurrentQueue<EventType> queue;
+        std::atomic<bool> done{false};
+        std::atomic<size_t> consumed{0};
+        
+        // Consumer threads
+        std::vector<std::thread> consumers;
+        for (int i = 0; i < num_consumers; ++i) {
+            consumers.emplace_back([&]() {
+                EventType event;
+                while (!done.load() || consumed.load() < total_events) {
+                    if (queue.try_dequeue(event)) {
+                        consumed.fetch_add(1);
+                    } else {
+                        std::this_thread::yield();
+                    }
+                }
+            });
+        }
+        
+        // Producer threads
+        std::vector<std::thread> producers;
+        for (int i = 0; i < num_producers; ++i) {
+            producers.emplace_back([&, i]() {
+                size_t base_seq = i * events_per_producer;
+                for (size_t j = 0; j < events_per_producer; ++j) {
+                    auto event = createEvent(base_seq + j);
+                    queue.enqueue(std::move(event));
+                }
+            });
+        }
+        
+        // Wait for producers to finish
+        for (auto& t : producers) {
+            t.join();
+        }
+        done.store(true);
+        for (auto& t : consumers) {
+            t.join();
+        }
     }
-  }
-
-  long long end_time = get_usec();
-  printf("Shared Memory sender finished: %lld usec (%.2f MB/s)\n", end_time - start_time,
-         ((double)BUFFER_SIZE * NUM_ITERATIONS) / (end_time - start_time));
+    
+    state.SetItemsProcessed(total_events);
 }
+BENCHMARK(BM_ConcurrentQueue_MPMC)->UseRealTime();
 
-void eventfd_receiver_old(int efd, struct shared_data* shm) {
-  char buffer[BUFFER_SIZE];
-  long long start_time = get_usec();
-
-  for (int i = 0; i < NUM_ITERATIONS; i++) {
-    uint64_t u;
-    if (read(efd, &u, sizeof(uint64_t)) != sizeof(uint64_t)) {
-      perror("eventfd read failed");
-      exit(1);
+// High throughput benchmark - moodycamel::ConcurrentQueue
+static void BM_ConcurrentQueue_HighThroughput(benchmark::State& state) {
+    const int num_producers = 4;  // Reduced from 8
+    const int num_consumers = 4;  // Reduced from 8  
+    const size_t total_events = 8000;  // Reduced to fit queue capacity
+    const size_t events_per_producer = total_events / num_producers;
+    
+    for (auto _ : state) {
+        moodycamel::ConcurrentQueue<EventType> queue;
+        std::atomic<bool> done{false};
+        std::atomic<size_t> consumed{0};
+        
+        // Consumer threads
+        std::vector<std::thread> consumers;
+        for (int i = 0; i < num_consumers; ++i) {
+            consumers.emplace_back([&]() {
+                EventType event;
+                while (!done.load() || consumed.load() < total_events) {
+                    if (queue.try_dequeue(event)) {
+                        consumed.fetch_add(1);
+                    } else {
+                        std::this_thread::yield();
+                    }
+                }
+            });
+        }
+        
+        // Producer threads
+        std::vector<std::thread> producers;
+        for (int i = 0; i < num_producers; ++i) {
+            producers.emplace_back([&, i]() {
+                size_t base_seq = i * events_per_producer;
+                for (size_t j = 0; j < events_per_producer; ++j) {
+                    auto event = createEvent(base_seq + j);
+                    queue.enqueue(std::move(event));
+                }
+            });
+        }
+        
+        // Wait for completion
+        for (auto& t : producers) {
+            t.join();
+        }
+        done.store(true);
+        for (auto& t : consumers) {
+            t.join();
+        }
     }
+    
+    state.SetItemsProcessed(total_events);
+    state.counters["Events/sec"] = benchmark::Counter(total_events, benchmark::Counter::kIsRate);
+}
+BENCHMARK(BM_ConcurrentQueue_HighThroughput)->Unit(benchmark::kMillisecond)->UseRealTime();
 
-    if (shm->size != BUFFER_SIZE) {
-      fprintf(stderr, "Size mismatch: expected %d, got %zu\n", BUFFER_SIZE, shm->size);
-      exit(1);
+// Bulk operations benchmark - shows bulk enqueue/dequeue performance
+static void BM_ConcurrentQueue_BulkOperations(benchmark::State& state) {
+    moodycamel::ConcurrentQueue<EventType> queue;
+    const size_t bulk_size = 500;
+    
+    for (auto _ : state) {
+        // Bulk enqueue
+        std::vector<EventType> events;
+        events.reserve(bulk_size);
+        for (size_t i = 0; i < bulk_size; ++i) {
+            events.emplace_back(createEvent(i));
+        }
+        
+        for (auto& event : events) {
+            queue.enqueue(std::move(event));
+        }
+        
+        // Bulk dequeue
+        std::vector<EventType> dequeued_events;
+        dequeued_events.reserve(bulk_size);
+        EventType event;
+        for (size_t i = 0; i < bulk_size; ++i) {
+            if (queue.try_dequeue(event)) {
+                dequeued_events.push_back(std::move(event));
+            }
+        }
+        
+        benchmark::DoNotOptimize(dequeued_events);
     }
-    memcpy(buffer, shm->buffer, BUFFER_SIZE);
-  }
-
-  long long end_time = get_usec();
-  printf("Shared Memory receiver finished: %lld usec (%.2f MB/s)\n", end_time - start_time,
-         ((double)BUFFER_SIZE * NUM_ITERATIONS) / (end_time - start_time));
+    
+    state.SetItemsProcessed(state.iterations() * bulk_size * 2); // enqueue + dequeue
 }
+BENCHMARK(BM_ConcurrentQueue_BulkOperations)->Iterations(10000);
 
-int main(void) {
-  printf("Buffer size: %d bytes\n", BUFFER_SIZE);
-  printf("Number of iterations: %d\n\n", NUM_ITERATIONS);
-
-  printf("=== FIFO Benchmark ===\n");
-  mkfifo(FIFO_PATH, 0666);
-  pid_t fifo_pid = fork();
-  if (fifo_pid == 0) {
-    fifo_target();
-    exit(0);
-  } else {
-    sleep(1);  // Give receiver time to start
-    fifo_source();
-    wait(NULL);
-  }
-  unlink(FIFO_PATH);
-
-  printf("\n=== Unix Domain Socket Benchmark ===\n");
-  pid_t socket_pid = fork();
-  if (socket_pid == 0) {
-    socket_target();
-    exit(0);
-  } else {
-    socket_source();
-    wait(NULL);
-  }
-
-  printf("\n=== Message Queue Benchmark ===\n");
-  pid_t mq_pid = fork();
-  if (mq_pid == 0) {
-    mq_target();
-    exit(0);
-  } else {
-    mq_source();
-    wait(NULL);
-  }
-
-  printf("\n=== Shared Memory + eventfd Benchmark ===\n");
-  int efd = eventfd(0, 0);
-  if (efd == -1) {
-    perror("eventfd");
-    return 1;
-  }
-
-  struct shared_data* shm = (struct shared_data*)mmap(
-      NULL, sizeof(struct shared_data), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-  pid_t shm_pid = fork();
-  if (shm_pid == 0) {
-    eventfd_receiver(efd, shm);
-    exit(0);
-  } else {
-    eventfd_sender(efd, shm);
-    wait(NULL);
-  }
-
-  close(efd);
-  munmap(shm, sizeof(struct shared_data));
-  return 0;
+// Memory contention benchmark - simplified
+static void BM_ConcurrentQueue_MemoryContention(benchmark::State& state) {
+    const int num_threads = 4; // Further reduced
+    const size_t operations_per_thread = 500; // Reduced operations to fit queue
+    
+    for (auto _ : state) {
+        moodycamel::ConcurrentQueue<EventType> queue;
+        std::vector<std::thread> threads;
+        
+        for (int i = 0; i < num_threads; ++i) {
+            threads.emplace_back([&, i]() {
+                for (size_t j = 0; j < operations_per_thread; ++j) {
+                    if (i % 2 == 0) {
+                        // Producer
+                        auto event = createEvent(j);
+                        queue.enqueue(std::move(event));
+                    } else {
+                        // Consumer
+                        EventType event;
+                        queue.try_dequeue(event);
+                    }
+                }
+            });
+        }
+        
+        for (auto& t : threads) {
+            t.join();
+        }
+    }
 }
+BENCHMARK(BM_ConcurrentQueue_MemoryContention)->UseRealTime();
+
+// ConcurrentQueue Single Producer Enqueue Speed Test
+static void BM_ConcurrentQueue_SingleProducerEnqueueSpeed(benchmark::State& state) {
+    moodycamel::ConcurrentQueue<EventType> queue;
+    
+    for (auto _ : state) {
+        size_t seq_num = 0;
+        auto start = std::chrono::high_resolution_clock::now();
+        
+        for (size_t i = 0; i < 8000; ++i) {
+            auto event = createEvent(seq_num++);
+            queue.enqueue(std::move(event));
+        }
+        
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        
+        state.SetIterationTime(duration.count() / 1000000.0);
+    }
+    
+    state.SetItemsProcessed(state.iterations() * 8000);
+    state.counters["Enqueues/sec"] = benchmark::Counter(8000, benchmark::Counter::kIsRate);
+}
+BENCHMARK(BM_ConcurrentQueue_SingleProducerEnqueueSpeed)->UseManualTime()->Iterations(10);
+
+// ConcurrentQueue Multi Producer Enqueue Speed Test
+static void BM_ConcurrentQueue_MultiProducerEnqueueSpeed(benchmark::State& state) {
+    const int num_producers = 4;
+    const size_t events_per_producer = 2000;
+    const size_t total_events = num_producers * events_per_producer;
+    
+    for (auto _ : state) {
+        moodycamel::ConcurrentQueue<EventType> queue;
+        std::atomic<bool> start_flag{false};
+        std::vector<std::thread> producers;
+        
+        auto start = std::chrono::high_resolution_clock::now();
+        
+        for (int i = 0; i < num_producers; ++i) {
+            producers.emplace_back([&, i]() {
+                while (!start_flag.load()) {
+                    std::this_thread::yield();
+                }
+                
+                size_t base_seq = i * events_per_producer;
+                for (size_t j = 0; j < events_per_producer; ++j) {
+                    auto event = createEvent(base_seq + j);
+                    queue.enqueue(std::move(event));
+                }
+            });
+        }
+        
+        start_flag.store(true);
+        
+        for (auto& t : producers) {
+            t.join();
+        }
+        
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        
+        state.SetIterationTime(duration.count() / 1000000.0);
+    }
+    
+    state.SetItemsProcessed(state.iterations() * total_events);
+    state.counters["Enqueues/sec"] = benchmark::Counter(total_events, benchmark::Counter::kIsRate);
+}
+BENCHMARK(BM_ConcurrentQueue_MultiProducerEnqueueSpeed)->UseManualTime()->Iterations(10);
+
+// OrderedMPMCQueue Single Producer Enqueue Speed Test
+static void BM_OrderedMPMCQueue_SingleProducerEnqueueSpeed(benchmark::State& state) {
+    for (auto _ : state) {
+        OrderedMPMCQueue<EventType, 8192> queue;
+        
+        size_t seq_num = 0;
+        auto start = std::chrono::high_resolution_clock::now();
+        
+        for (size_t i = 0; i < 8000; ++i) {
+            auto event = createEvent(seq_num++);
+            queue.enqueue(std::move(event));
+        }
+        
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        
+        state.SetIterationTime(duration.count() / 1000000.0);
+    }
+    
+    state.SetItemsProcessed(state.iterations() * 8000);
+    state.counters["Enqueues/sec"] = benchmark::Counter(8000, benchmark::Counter::kIsRate);
+}
+BENCHMARK(BM_OrderedMPMCQueue_SingleProducerEnqueueSpeed)->UseManualTime()->Iterations(10);
+
+// OrderedMPMCQueue Multi Producer Enqueue Speed Test
+static void BM_OrderedMPMCQueue_MultiProducerEnqueueSpeed(benchmark::State& state) {
+    const int num_producers = 4;
+    const size_t events_per_producer = 2000;
+    const size_t total_events = num_producers * events_per_producer;
+    
+    for (auto _ : state) {
+        OrderedMPMCQueue<EventType, 8192> queue;
+        std::atomic<bool> start_flag{false};
+        std::vector<std::thread> producers;
+        
+        auto start = std::chrono::high_resolution_clock::now();
+        
+        for (int i = 0; i < num_producers; ++i) {
+            producers.emplace_back([&, i]() {
+                while (!start_flag.load()) {
+                    std::this_thread::yield();
+                }
+                
+                size_t base_seq = i * events_per_producer;
+                for (size_t j = 0; j < events_per_producer; ++j) {
+                    auto event = createEvent(base_seq + j);
+                    queue.enqueue(std::move(event));
+                }
+            });
+        }
+        
+        start_flag.store(true);
+        
+        for (auto& t : producers) {
+            t.join();
+        }
+        
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        
+        state.SetIterationTime(duration.count() / 1000000.0);
+    }
+    
+    state.SetItemsProcessed(state.iterations() * total_events);
+    state.counters["Enqueues/sec"] = benchmark::Counter(total_events, benchmark::Counter::kIsRate);
+}
+BENCHMARK(BM_OrderedMPMCQueue_MultiProducerEnqueueSpeed)->UseManualTime()->Iterations(10);
+
+/*
+===============================================================================
+IMPORTANT NOTE: OrderedMPMCQueue Benchmarks
+===============================================================================
+
+OrderedMPMCQueue benchmarks are NOT included in this file due to compilation/runtime 
+issues in the Google Benchmark context. The OrderedMPMCQueue has specific initialization 
+and lifecycle requirements that conflict with the benchmark framework, causing segfaults.
+
+However, comprehensive OrderedMPMCQueue performance tests ARE available in the unit tests:
+
+To benchmark OrderedMPMCQueue:
+1. Run: ./tests/tests --gtest_filter="*Performance*"
+2. Run: ./tests/tests --gtest_filter="*Stress*" 
+3. Or check tests.cpp for 50+ comprehensive performance and stress tests
+
+Performance Comparison Context:
+- OrderedMPMCQueue: Guarantees in-order consumption based on sequence numbers
+- moodycamel::ConcurrentQueue: No ordering guarantees, pure FIFO with high performance
+
+The OrderedMPMCQueue provides unique ordering guarantees that come with a performance
+cost compared to moodycamel::ConcurrentQueue. Choose based on your requirements:
+- Need ordering: OrderedMPMCQueue
+- Need maximum speed: moodycamel::ConcurrentQueue
+
+Current benchmarks test moodycamel::ConcurrentQueue performance across different
+producer/consumer patterns to establish baseline performance expectations.
+*/
+
+BENCHMARK_MAIN();

@@ -28,19 +28,20 @@ endif()
 
 find_package(Boost COMPONENTS filesystem)
 find_package(GTest REQUIRED)
+find_package(benchmark REQUIRED)
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(include)
 
-# object files
+# Object files (libraries)
 add_library(forwardlistadaptor OBJECT forwardlistadaptor.cpp)
 add_library(priorityqueueadaptor OBJECT priorityqueueadaptor.cpp)
 add_library(orderstatisticstreeadaptor OBJECT orderstatisticstreeadaptor.cpp)
 add_library(orderbook OBJECT orderbook.cpp)
 
 #######
-# DRIVER
-########
+# EXECUTABLES - Main Applications
+#######
 add_executable(driver driver.cpp)
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   target_compile_options(driver PRIVATE
@@ -50,21 +51,19 @@ endif()
 target_compile_definitions(driver PUBLIC -DCXX_FILESYSTEM_HEADER=<boost/filesystem.hpp>)
 target_compile_definitions(driver PUBLIC -DCXX_FILESYSTEM_NAMESPACE=boost::filesystem)
 target_link_libraries(driver PUBLIC Boost::filesystem pthread)
+set_target_properties(driver PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-#############################
-# ORDEREDQUEUE EXAMPLE DRIVER
-#############################
 add_executable(orderedqueue_driver orderedqueue_driver.cpp)
+set_target_properties(orderedqueue_driver PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 #######
-# TESTS
+# TESTING - Tests and Benchmarks
 #######
+# Set output directory for test executables
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+
 add_executable(tests tests.cpp)
 target_link_libraries(tests ${GTEST_LIBRARIES} pthread)
 
-
-
-
-
-
+add_executable(benchmarks benchmarks.cpp)
+target_link_libraries(benchmarks benchmark::benchmark pthread)

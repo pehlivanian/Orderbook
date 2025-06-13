@@ -54,13 +54,19 @@ auto main(int argc, char** argv) -> int {
   constexpr int num_consumers = 20;
   constexpr int num_messages_per_producer = 10;
 
-  std::atomic<bool> running{true};
+  std::atomic<bool> start{false};
+  std::atomic<bool> stop{false};
 
   std::vector<std::thread> producers, consumers;
 
-  auto produce = [&q, &running](std::string p, unsigned long s1, unsigned long s2) {
+  auto produce = [&q, &start, &stop](std::string p, unsigned long s1, unsigned long s2) {
+    
+    while (!start.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+
     for (unsigned long i=s1; i<s2; ++i) {
-      if (running) {
+      if (!stop.load(std::memory_order_acquire)) {
 	q->enqueue(EventType{p, i});
       }
     }
@@ -74,14 +80,22 @@ auto main(int argc, char** argv) -> int {
     std::iota(producerOrder.begin(), producerOrder.end(), 0);
     std::shuffle(producerOrder.begin(), producerOrder.end(), gen);
     
-    std::thread timer([&running](){
-			std::this_thread::sleep_for(std::chrono::seconds(8)); 
-			running = false;
+    std::thread timer([&start, &stop](){
+			std::this_thread::sleep_for(std::chrono::seconds(2));
+			start.store(true, std::memory_order_release);
+			std::this_thread::sleep_for(std::chrono::seconds(5)); 
+			stop.store(true, std::memory_order_release);
 		      });
     timer.detach();
 
-    auto consume = [&q, &running](EventType& e) {
-      while (true && running) {
+    auto consume = [&q, &start, &stop](EventType& e) {
+      
+      while (!start.load(std::memory_order_acquire)) {
+	std::this_thread::yield();
+      }
+
+
+      while (!stop.load(std::memory_order_acquire)) {
 	auto found = q->try_dequeue(true);
 	if (found.has_value()) {
 	  publish(*found);
@@ -97,10 +111,10 @@ auto main(int argc, char** argv) -> int {
 				      payload, 
 				      (producer_num) * num_messages_per_producer,
 				      (producer_num + 1) * num_messages_per_producer));
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+      // std::this_thread::sleep_for(std::chrono::seconds(1));
     }
-
-    for(std::size_t i=0; i<num_producers; ++i) {
+    
+    for (std::size_t i=0; i<num_producers; ++i) {
       producers[i].join();
     }
 
