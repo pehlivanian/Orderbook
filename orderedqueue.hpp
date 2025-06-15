@@ -18,6 +18,7 @@
 #include <optional>
 #include <syncstream>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #define sync_cout std::osyncstream(std::cout)
@@ -26,6 +27,7 @@
 #undef DEBUG
 
 const int NUM_RETRY_DEQUEUE = 10;
+const int CACHE_LINE_SIZE = 64;
 
 using namespace Numerics;
 using namespace Utils;
@@ -39,12 +41,15 @@ class OrderedMPMCQueue {
 
   static constexpr std::size_t MASK = Capacity - 1;
 
-  struct Node {
+  struct alignas(CACHE_LINE_SIZE) Node {
     EventType event;
     std::atomic<bool> ready{false};
     std::atomic<bool> processed{false};
     
     Node() : event{}, ready{false}, processed{false} {}
+    
+    // Pad to cache line boundary to prevent false sharing
+    char padding[CACHE_LINE_SIZE - sizeof(EventType) - 2 * sizeof(std::atomic<bool>)];
   };
 
   static constexpr size_t CACHE_LINE_SIZE = 64;
@@ -79,7 +84,7 @@ class OrderedMPMCQueue {
     const size_t seqNum = event.seqNum_;
     const size_t idx = getIndex(seqNum);
 
-    // Simple capacity check - don't allow more than Capacity pending events
+    // Simple capacity check with relaxed memory ordering for better performance
     size_t writeCount = writeCount_.load(std::memory_order_relaxed);
     size_t nextToConsume = nextToConsume_.load(std::memory_order_relaxed);
     
@@ -105,7 +110,7 @@ class OrderedMPMCQueue {
 
     // Finally, mark as ready (this is the signal that the event is available)
     node.ready.store(true, std::memory_order_release);
-    writeCount_.fetch_add(1, std::memory_order_release);
+    writeCount_.fetch_add(1, std::memory_order_relaxed);
 
     // sync_cout << "Enqueued event with seqNum_: " << node.event.seqNum_ << std::endl;
 
