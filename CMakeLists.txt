@@ -26,7 +26,7 @@ if (NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-find_package(Boost COMPONENTS filesystem)
+find_package(Boost COMPONENTS filesystem system thread chrono REQUIRED)
 find_package(GTest REQUIRED)
 find_package(benchmark REQUIRED)
 
@@ -66,4 +66,4 @@ add_executable(tests tests.cpp)
 target_link_libraries(tests ${GTEST_LIBRARIES} pthread)
 
 add_executable(benchmarks benchmarks.cpp)
-target_link_libraries(benchmarks benchmark::benchmark pthread)
+target_link_libraries(benchmarks Disruptor benchmark::benchmark ${Boost_LIBRARIES} pthread)
