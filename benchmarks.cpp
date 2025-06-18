@@ -733,13 +733,7 @@ static void BM_DisruptorQueue_SPSC(benchmark::State& state) {
 
 
   queue.addConsumer([&](EventType& event) {
-		      while (!done.load() || consumed.load() < static_cast<size_t>(state.iterations())) {
-			if (queue.try_dequeue(event)) {
-			  consumed.fetch_add(1);
-			} else {
-			  std::this_thread::yield();
-			}
-		      }
+		      consumed.fetch_add(1);
 		    });
 
   queue.start();
@@ -748,6 +742,11 @@ static void BM_DisruptorQueue_SPSC(benchmark::State& state) {
   for (auto _ : state) {
     auto event = createEvent(seq_num++);
     queue.enqueue(std::move(event));
+  }
+
+  // Wait for all events to be consumed
+  while (consumed.load() < static_cast<size_t>(state.iterations())) {
+    std::this_thread::yield();
   }
 
   done.store(true);
@@ -764,16 +763,9 @@ static void BM_DisruptorQueue_SPMC(benchmark::State& state) {
       DisruptorQueue<EventType, 8192> queue;
       std::atomic<bool> done{false};
       std::atomic<size_t> consumed{0};
-      
-        // Consumer threads
-        std::vector<std::thread> consumers;
         for (int i = 0; i < num_consumers; ++i) {
 	  queue.addConsumer([&](EventType& event) {
-			      if (queue.try_dequeue(event)) {
-				consumed.fetch_add(1);
-			      } else {
-				std::this_thread::yield();
-			      }
+			      consumed.fetch_add(1);
 			    });
         }
 
@@ -785,12 +777,13 @@ static void BM_DisruptorQueue_SPMC(benchmark::State& state) {
             queue.enqueue(std::move(event));
         }
         
-        done.store(true);
-        for (auto& t : consumers) {
-            t.join();
+        // Wait for all events to be consumed
+        while (consumed.load() < total_events) {
+            std::this_thread::yield();
         }
-
-	queue.shutdown();
+        
+        done.store(true);
+        queue.shutdown();
     }
 
     
@@ -813,11 +806,7 @@ static void BM_DisruptorQueue_MPMC(benchmark::State& state) {
     // Consumer threads
     for (int i=0; i<num_consumers; ++i) {
       queue.addConsumer([&](EventType& event) {
-			   if (queue.try_dequeue(event)) {
 			     consumed.fetch_add(1);
-			   } else {
-			     std::this_thread::yield();
-			   }
 			 });
     }
 
@@ -825,13 +814,27 @@ static void BM_DisruptorQueue_MPMC(benchmark::State& state) {
 
     // Producer threads
     std::vector<std::thread> producers;
-    for (int i=0; i<num_producers; ++i) {
-      auto event = createEvent(i);
-      queue.enqueue(std::move(event));
+    for (int i = 0; i < num_producers; ++i) {
+      producers.emplace_back([&, i]() {
+        size_t base_seq = i * events_per_producer;
+        for (size_t j = 0; j < events_per_producer; ++j) {
+          auto event = createEvent(base_seq + j);
+          queue.enqueue(std::move(event));
+        }
+      });
+    }
+    
+    // Wait for producers to finish
+    for (auto& t : producers) {
+      t.join();
+    }
+    
+    // Wait for all events to be consumed
+    while (consumed.load() < total_events) {
+      std::this_thread::yield();
     }
 
     done.store(true);
-
     queue.shutdown();
     
     
@@ -855,13 +858,7 @@ static void BM_DisruptorQueue_HighThroughput(benchmark::State& state) {
         // Consumer threads
         for (int i = 0; i < num_consumers; ++i) {
             queue.addConsumer([&](EventType& event) {
-                while (!done.load() || consumed.load() < total_events) {
-                    if (queue.try_dequeue(event)) {
-                        consumed.fetch_add(1);
-                    } else {
-                        std::this_thread::yield();
-                    }
-                }
+                consumed.fetch_add(1);
             });
         }
 
@@ -870,11 +867,23 @@ static void BM_DisruptorQueue_HighThroughput(benchmark::State& state) {
         // Producer threads
         std::vector<std::thread> producers;
         for (int i = 0; i < num_producers; ++i) {
-	  size_t base_seq = i * events_per_producer;
-	  for (size_t j = 0; j < events_per_producer; ++j) {
-	    auto event = createEvent(base_seq + j);
-	    queue.enqueue(std::move(event));
-	  }
+          producers.emplace_back([&, i]() {
+            size_t base_seq = i * events_per_producer;
+            for (size_t j = 0; j < events_per_producer; ++j) {
+              auto event = createEvent(base_seq + j);
+              queue.enqueue(std::move(event));
+            }
+          });
+        }
+        
+        // Wait for producers to finish
+        for (auto& t : producers) {
+          t.join();
+        }
+        
+        // Wait for all events to be consumed
+        while (consumed.load() < total_events) {
+          std::this_thread::yield();
         }
 
 	done.store(true);
@@ -886,103 +895,5 @@ static void BM_DisruptorQueue_HighThroughput(benchmark::State& state) {
 }
 BENCHMARK(BM_DisruptorQueue_HighThroughput)->Unit(benchmark::kMillisecond)->UseRealTime();
 
-/*
-// Bulk operations benchmark - shows bulk enqueue/dequeue performance
-static void BM_OrderedQueue_BulkOperations(benchmark::State& state) {
-OrderedMPMCQueue<EventType, 1024> queue;
-const size_t bulk_size = 500;
-
-for (auto _ : state) {
-// Bulk enqueue
-std::vector<EventType> events;
-events.reserve(bulk_size);
-for (size_t i = 0; i < bulk_size; ++i) {
-events.emplace_back(createEvent(i));
-}
-
-for (auto& event : events) {
-queue.enqueue(std::move(event));
-}
-
-// Bulk dequeue
-std::vector<EventType> dequeued_events;
-dequeued_events.reserve(bulk_size);
-EventType event;
-for (size_t i = 0; i < bulk_size; ++i) {
-if (queue.try_dequeue(event)) {
-dequeued_events.push_back(std::move(event));
-}
-}
-
-benchmark::DoNotOptimize(dequeued_events);
-}
-
-state.SetItemsProcessed(state.iterations() * bulk_size * 2); // enqueue + dequeue
-}
-BENCHMARK(BM_OrderedQueue_BulkOperations)->Iterations(10000);
-
-
-// Memory contention benchmark - simplified
-static void BM_OrderedQueue_MemoryContention(benchmark::State& state) {
-const int num_threads = 4; // Further reduced
-const size_t operations_per_thread = 500; // Reduced operations to fit queue
-
-for (auto _ : state) {
-OrderedMPMCQueue<EventType, 1024> queue;
-std::vector<std::thread> threads;
-
-for (int i = 0; i < num_threads; ++i) {
-threads.emplace_back([&, i]() {
-for (size_t j = 0; j < operations_per_thread; ++j) {
-if (i % 2 == 0) {
-// Producer
-auto event = createEvent(j);
-queue.enqueue(std::move(event));
-} else {
-// Consumer
-EventType event;
-queue.try_dequeue(event);
-}
-}
-});
-}
-
-for (auto& t : threads) {
-t.join();
-}
-}
-}
-BENCHMARK(BM_OrderedQueue_MemoryContention)->UseRealTime();
-*/
-
-
-/*
-===============================================================================
-IMPORTANT NOTE: OrderedMPMCQueue Benchmarks
-===============================================================================
-
-OrderedMPMCQueue benchmarks are NOT included in this file due to compilation/runtime 
-issues in the Google Benchmark context. The OrderedMPMCQueue has specific initialization 
-and lifecycle requirements that conflict with the benchmark framework, causing segfaults.
-
-However, comprehensive OrderedMPMCQueue performance tests ARE available in the unit tests:
-
-To benchmark OrderedMPMCQueue:
-1. Run: ./tests/tests --gtest_filter="*Performance*"
-2. Run: ./tests/tests --gtest_filter="*Stress*" 
-3. Or check tests.cpp for 50+ comprehensive performance and stress tests
-
-Performance Comparison Context:
-- OrderedMPMCQueue: Guarantees in-order consumption based on sequence numbers
-- moodycamel::ConcurrentQueue: No ordering guarantees, pure FIFO with high performance
-
-The OrderedMPMCQueue provides unique ordering guarantees that come with a performance
-cost compared to moodycamel::ConcurrentQueue. Choose based on your requirements:
-- Need ordering: OrderedMPMCQueue
-- Need maximum speed: moodycamel::ConcurrentQueue
-
-Current benchmarks test moodycamel::ConcurrentQueue performance across different
-producer/consumer patterns to establish baseline performance expectations.
-*/
 
 BENCHMARK_MAIN();
