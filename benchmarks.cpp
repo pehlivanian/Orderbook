@@ -23,6 +23,7 @@
 #include "disruptorqueue.hpp"
 
 
+
 struct BenchmarkEvent {
     unsigned long seqNum_;
     double time_;
