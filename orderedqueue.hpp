@@ -16,15 +16,10 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <syncstream>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
-#define sync_cout std::osyncstream(std::cout)
-
-#define DEBUG
-#undef DEBUG
 
 const int NUM_RETRY_DEQUEUE = 10;
 const int CACHE_LINE_SIZE = 64;
@@ -113,7 +108,6 @@ class OrderedMPMCQueue {
     node.ready.store(true, std::memory_order_release);
     writeCount_.fetch_add(1, std::memory_order_relaxed);
 
-    // sync_cout << "Enqueued event with seqNum_: " << node.event.seqNum_ << std::endl;
 
     return true;
   }
@@ -138,11 +132,8 @@ class OrderedMPMCQueue {
   std::optional<EventType> try_dequeue(bool external_ack=false) {
     size_t currentReadSeqNum = nextToConsume_.load(std::memory_order_acquire);
     const size_t idx = getIndex(currentReadSeqNum);
-    auto thread_id = std::this_thread::get_id();
 
     Node& node = buffer_[idx];
-    bool nodeReady = node.ready.load(std::memory_order_acquire);
-    bool nodeProcessed = node.processed.load(std::memory_order_acquire);
     
     // Check if previous sequence was processed (ordering constraint)
     if (currentReadSeqNum > 0) {
@@ -172,111 +163,57 @@ class OrderedMPMCQueue {
       return std::nullopt;
     }
 
-#ifdef DEBUG
-    sync_cout << "[DEBUG][T" << thread_id << "] CLAIMED: seq " << currentReadSeqNum << ", nextToConsume_ now " << (currentReadSeqNum + 1) << std::endl;
-#endif
 
     // We've claimed this sequence number, now we can safely process it
     // Wait for the node to be ready and contain the correct event
-#ifdef DEBUG
-    sync_cout << "[DEBUG][T" << thread_id << "] Starting retry loop to wait for correct event" << std::endl;
-#endif
     for (int retry = 0; retry < NUM_RETRY_DEQUEUE; ++retry) {
       bool ready = node.ready.load(std::memory_order_acquire);
       
-#ifdef DEBUG
-      if (retry % 100 == 0 || retry < 10 || ready) {
-        sync_cout << "[DEBUG][T" << thread_id << "] Retry " << retry << ": ready=" << ready;
-        if (ready) {
-          sync_cout << " (seqNum=" << node.event.seqNum_ << ")";
-        }
-        sync_cout << std::endl;
-      }
-#endif
       
       if (ready) {
         if (node.event.seqNum_ == currentReadSeqNum) {
-#ifdef DEBUG
-          sync_cout << "[DEBUG][T" << thread_id << "] Found correct event at retry " << retry << ", proceeding to process" << std::endl;
-#endif
           // Found the correct event, record dequeue order and proceed
 #ifdef MAINTAIN_INTERNAL_DEQUEUE_ORDER
           {
             std::lock_guard<std::mutex> lock(dequeue_mut);
             dequeue_order_.push_back(currentReadSeqNum);
-#ifdef DEBUG
-            sync_cout << "[DEBUG][T" << thread_id << "] Added " << currentReadSeqNum << " to dequeue_order" << std::endl;
-#endif
           }
 #endif
           goto process_event;
         } else {
-#ifdef DEBUG
-          sync_cout << "[DEBUG][T" << thread_id << "] Event exists but wrong sequence: got " << node.event.seqNum_ 
-                    << ", expected " << currentReadSeqNum << std::endl;
-#endif
         }
       }
       
       if (retry == -1 + NUM_RETRY_DEQUEUE) {
-#ifdef DEBUG
-        sync_cout << "[DEBUG][T" << thread_id << "] Failed to get event after 10000 retries - attempting to restore nextToConsume_ to " << currentReadSeqNum << std::endl;
-#endif
         // Failed to get the event - need to restore nextToConsume since we claimed it
         // Restore to the minimum of current value and our timeout sequence
         size_t current = nextToConsume_.load(std::memory_order_acquire);
         while (currentReadSeqNum < current) {
           if (nextToConsume_.compare_exchange_weak(current, currentReadSeqNum, 
                                                    std::memory_order_acq_rel, std::memory_order_acquire)) {
-#ifdef DEBUG
-            sync_cout << "[DEBUG][T" << thread_id << "] Successfully restored nextToConsume_ from " << current << " to " << currentReadSeqNum << std::endl;
-#endif
             break;
           }
           // compare_exchange_weak updates current with the actual value, retry
-#ifdef DEBUG
-          sync_cout << "[DEBUG][T" << thread_id << "] Restore retry: current=" << current << ", target=" << currentReadSeqNum << std::endl;
-#endif
         }
-#ifdef DEBUG
-        if (currentReadSeqNum >= current) {
-          sync_cout << "[DEBUG][T" << thread_id << "] No restore needed: currentReadSeqNum=" << currentReadSeqNum << " >= current=" << current << std::endl;
-        }
-#endif
         return std::nullopt;
       }
       std::this_thread::yield();
     }
     
   process_event:
-#ifdef DEBUG
-    sync_cout << "[DEBUG][T" << thread_id << "] Processing event: seqNum=" << node.event.seqNum_ << ", external_ack=" << external_ack << std::endl;
-#endif
 
     // Move the event data
     EventType result = node.event;  // Copy the event
-#ifdef DEBUG
-    sync_cout << "[DEBUG][T" << thread_id << "] Copied event data" << std::endl;
-#endif
     
     if (!external_ack) {
-#ifdef DEBUG
-      sync_cout << "[DEBUG][T" << thread_id << "] No external ack - marking processed immediately" << std::endl;
-#endif
       // Mark processed immediately
       node.ready.store(false, std::memory_order_release);
       mark_processed(currentReadSeqNum);
     } else {
-#ifdef DEBUG
-      sync_cout << "[DEBUG][T" << thread_id << "] External ack mode - only setting ready=false, will mark processed later" << std::endl;
-#endif
       // Don't mark processed yet - mark_processed will do it
       node.ready.store(false, std::memory_order_release);
     }
 
-#ifdef DEBUG
-    sync_cout << "[DEBUG][T" << thread_id << "] try_dequeue() returning event with seqNum=" << result.seqNum_ << std::endl;
-#endif
     return result;
   }
 
@@ -287,9 +224,6 @@ class OrderedMPMCQueue {
     // Mark this node as processed
     node.processed.store(true, std::memory_order_release);
 
-#ifdef DEBUG
-    sync_cout << "Marked processed event " << seqNum << std::endl;
-#endif
   }
 
   bool empty() const {
