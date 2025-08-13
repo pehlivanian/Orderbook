@@ -52,15 +52,16 @@ class OrderedMPMCQueue {
     char padding[CACHE_LINE_SIZE - sizeof(EventType) - 2 * sizeof(std::atomic<bool>)];
   };
 
-  static constexpr size_t CACHE_LINE_SIZE = 64;
 
   alignas(CACHE_LINE_SIZE) std::array<Node, Capacity> buffer_;
   alignas(CACHE_LINE_SIZE) std::atomic<size_t> writeCount_{0};
   alignas(CACHE_LINE_SIZE) std::atomic<size_t> nextToConsume_{0};
 
+#ifdef MAINTAIN_INTERNAL_DEQUEUE_ORDER
   // Track dequeue order separately from processing order
   mutable std::mutex dequeue_mut;
   std::vector<std::size_t> dequeue_order_;
+#endif
 
   size_t getIndex(size_t seqNum) const { return seqNum & MASK; }
 
@@ -139,93 +140,35 @@ class OrderedMPMCQueue {
     const size_t idx = getIndex(currentReadSeqNum);
     auto thread_id = std::this_thread::get_id();
 
-#ifdef DEBUG
-    sync_cout << "[DEBUG][T" << thread_id << "] try_dequeue() called with external_ack=" << external_ack << std::endl;
-    sync_cout << "[DEBUG][T" << thread_id << "] currentReadSeqNum=" << currentReadSeqNum << ", idx=" << idx << std::endl;
-    sync_cout << "[DEBUG][T" << thread_id << "] writeCount_=" << writeCount_.load() << ", nextToConsume_=" << nextToConsume_.load() << std::endl;
-#endif
-
     Node& node = buffer_[idx];
     bool nodeReady = node.ready.load(std::memory_order_acquire);
     bool nodeProcessed = node.processed.load(std::memory_order_acquire);
     
-#ifdef DEBUG
-    sync_cout << "[DEBUG][T" << thread_id << "] Current node[" << idx << "]: ready=" << nodeReady 
-              << ", processed=" << nodeProcessed;
-    if (nodeReady) {
-      sync_cout << " (seqNum=" << node.event.seqNum_ << ")";
-    }
-    sync_cout << std::endl;
-#endif
-
     // Check if previous sequence was processed (ordering constraint)
     if (currentReadSeqNum > 0) {
       size_t prevSeqNum = currentReadSeqNum - 1;
       size_t prevIdx = getIndex(prevSeqNum);
       Node& prevNode = buffer_[prevIdx];
       
-#ifdef DEBUG
-      sync_cout << "[DEBUG][T" << thread_id << "] Checking previous sequence: prevSeqNum=" << prevSeqNum << ", prevIdx=" << prevIdx << std::endl;
-#endif
-      
       // Check if the previous sequence was processed
       bool prevProcessed = prevNode.processed.load(std::memory_order_acquire);
       bool prevReady = prevNode.ready.load(std::memory_order_acquire);
       
-#ifdef DEBUG
-      sync_cout << "[DEBUG][T" << thread_id << "] Previous node[" << prevIdx << "]: ready=" << prevReady 
-                << ", processed=" << prevProcessed;
-      if (prevReady) {
-        sync_cout << " (seqNum=" << prevNode.event.seqNum_ << ")";
-      }
-      sync_cout << std::endl;
-#endif
-      
       if (!prevProcessed) {
-#ifdef DEBUG
-        sync_cout << "[DEBUG][T" << thread_id << "] Previous sequence not processed yet" << std::endl;
-#endif
-        
         // If the previous slot is not ready, the sequence wasn't enqueued yet
         if (!prevReady) {
-#ifdef DEBUG
-          sync_cout << "[DEBUG][T" << thread_id << "] Previous slot not ready - sequence " << prevSeqNum << " not enqueued yet, blocking" << std::endl;
-#endif
           return std::nullopt;
         } else if (prevNode.event.seqNum_ == prevSeqNum) {
-#ifdef DEBUG
-          sync_cout << "[DEBUG][T" << thread_id << "] Waiting for exact previous sequence " << prevSeqNum << " to be processed - blocking" << std::endl;
-#endif
           return std::nullopt;
-        } else {
-#ifdef DEBUG
-          sync_cout << "[DEBUG][T" << thread_id << "] Previous slot contains different sequence (" << prevNode.event.seqNum_ 
-                    << " != " << prevSeqNum << ") - wraparound case, continuing" << std::endl;
-#endif
-        }
-      } else {
-#ifdef DEBUG
-        sync_cout << "[DEBUG][T" << thread_id << "] Previous sequence was already processed, continuing" << std::endl;
-#endif
+        } 
       }
-    } else {
-#ifdef DEBUG
-      sync_cout << "[DEBUG][T" << thread_id << "] This is sequence 0, no previous sequence to check" << std::endl;
-#endif
     }
 
     // Try to claim this sequence number
-#ifdef DEBUG
-    sync_cout << "[DEBUG][T" << thread_id << "] Attempting to claim sequence " << currentReadSeqNum << std::endl;
-#endif
     size_t expected = currentReadSeqNum;
     if (!nextToConsume_.compare_exchange_strong(expected, currentReadSeqNum + 1,
                                                 std::memory_order_acq_rel,
                                                 std::memory_order_acquire)) {
-#ifdef DEBUG
-      sync_cout << "[DEBUG][T" << thread_id << "] CLAIM FAILED: Thread failed to claim seq " << currentReadSeqNum 
-                << ", expected " << expected << " but nextToConsume_ is " << nextToConsume_.load() << std::endl;
-#endif
       return std::nullopt;
     }
 
@@ -257,6 +200,7 @@ class OrderedMPMCQueue {
           sync_cout << "[DEBUG][T" << thread_id << "] Found correct event at retry " << retry << ", proceeding to process" << std::endl;
 #endif
           // Found the correct event, record dequeue order and proceed
+#ifdef MAINTAIN_INTERNAL_DEQUEUE_ORDER
           {
             std::lock_guard<std::mutex> lock(dequeue_mut);
             dequeue_order_.push_back(currentReadSeqNum);
@@ -264,6 +208,7 @@ class OrderedMPMCQueue {
             sync_cout << "[DEBUG][T" << thread_id << "] Added " << currentReadSeqNum << " to dequeue_order" << std::endl;
 #endif
           }
+#endif
           goto process_event;
         } else {
 #ifdef DEBUG
@@ -368,6 +313,7 @@ class OrderedMPMCQueue {
     return nextToConsume_.load(std::memory_order_relaxed);
   }
 
+#ifdef MAINTAIN_INTERNAL_DEQUEUE_ORDER
   void replay() const {
     std::cout << "Dequeue order:\n";
     std::copy(dequeue_order_.begin(), dequeue_order_.end(),
@@ -386,6 +332,7 @@ class OrderedMPMCQueue {
     std::lock_guard<std::mutex> lock(dequeue_mut);
     dequeue_order_.clear();
   }
+#endif
 
   void reset() {
     // Clear all nodes completely
@@ -398,11 +345,13 @@ class OrderedMPMCQueue {
     writeCount_.store(0, std::memory_order_seq_cst);
     nextToConsume_.store(0, std::memory_order_seq_cst);
     
+#ifdef MAINTAIN_INTERNAL_DEQUEUE_ORDER
     // Clear tracking vectors
     {
       std::lock_guard<std::mutex> lock(dequeue_mut);
       dequeue_order_.clear();
     }
+#endif
     
     // Additional synchronization to ensure all threads see the reset
     std::atomic_thread_fence(std::memory_order_seq_cst);

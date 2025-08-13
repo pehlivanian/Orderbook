@@ -26,6 +26,9 @@ if (NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# Option to enable dequeue order tracking (OFF by default for performance)
+option(MAINTAIN_INTERNAL_DEQUEUE_ORDER "Enable dequeue order tracking for testing" OFF)
+
 find_package(Boost COMPONENTS filesystem system thread chrono REQUIRED)
 find_package(GTest REQUIRED)
 find_package(benchmark REQUIRED)
@@ -62,8 +65,15 @@ set_target_properties(orderedqueue_driver PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${
 # Set output directory for test executables
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 
-add_executable(tests tests.cpp)
-target_link_libraries(tests ${GTEST_LIBRARIES} pthread)
+# Only build tests if dequeue order tracking is enabled
+if(MAINTAIN_INTERNAL_DEQUEUE_ORDER)
+  message(STATUS "Building tests with MAINTAIN_INTERNAL_DEQUEUE_ORDER enabled")
+  add_executable(tests tests.cpp)
+  target_compile_definitions(tests PRIVATE MAINTAIN_INTERNAL_DEQUEUE_ORDER)
+  target_link_libraries(tests ${GTEST_LIBRARIES} pthread)
+else()
+  message(STATUS "Skipping tests - MAINTAIN_INTERNAL_DEQUEUE_ORDER is disabled")
+endif()
 
 add_executable(benchmarks benchmarks.cpp)
 target_link_libraries(benchmarks Disruptor benchmark::benchmark ${Boost_LIBRARIES} pthread)
