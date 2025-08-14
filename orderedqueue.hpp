@@ -42,10 +42,11 @@ class OrderedMPMCQueue {
     std::atomic<bool> processed{false};
     
     Node() : event{}, ready{false}, processed{false} {}
-    
-    // Pad to cache line boundary to prevent false sharing
-    char padding[CACHE_LINE_SIZE - sizeof(EventType) - 2 * sizeof(std::atomic<bool>)];
   };
+  
+  // Verify that the compiler gave us what we wanted
+  static_assert(sizeof(Node) >= CACHE_LINE_SIZE, "Node must be at least cache line size");
+  static_assert(sizeof(Node) % CACHE_LINE_SIZE == 0, "Node must be multiple of cache line size");
 
 
   alignas(CACHE_LINE_SIZE) std::array<Node, Capacity> buffer_;

@@ -223,6 +223,53 @@ static void BM_MPSC_ConcurrentQueue(benchmark::State& state) {
 }
 BENCHMARK(BM_MPSC_ConcurrentQueue)->UseRealTime();
 
+static void BM_MPSC_DisruptorQueue(benchmark::State& state) {
+    const int num_producers = 4;
+    const size_t total_events = 8000;
+    const size_t events_per_producer = total_events / num_producers;
+    
+    for (auto _ : state) {
+        DisruptorQueue<EventType, 8192> queue;
+        std::atomic<bool> done{false};
+        std::atomic<size_t> consumed{0};
+        
+        // Single consumer
+        queue.addConsumer([&](EventType& event) {
+            consumed.fetch_add(1);
+        });
+        
+        queue.start();
+        
+        // Producer threads
+        std::vector<std::thread> producers;
+        for (int i = 0; i < num_producers; ++i) {
+            producers.emplace_back([&, i]() {
+                size_t base_seq = i * events_per_producer;
+                for (size_t j = 0; j < events_per_producer; ++j) {
+                    auto event = createEvent(base_seq + j);
+                    queue.enqueue(std::move(event));
+                }
+            });
+        }
+        
+        // Wait for producers to finish
+        for (auto& t : producers) {
+            t.join();
+        }
+        
+        // Wait for all events to be consumed
+        while (consumed.load() < total_events) {
+            std::this_thread::yield();
+        }
+        
+        done.store(true);
+        queue.shutdown();
+    }
+    
+    state.SetItemsProcessed(total_events);
+}
+BENCHMARK(BM_MPSC_DisruptorQueue)->UseRealTime();
+
 //////////////////////////////////////////////////
 // SINGLE PRODUCER MULTIPLE CONSUMER (SPMC)
 //////////////////////////////////////////////////
