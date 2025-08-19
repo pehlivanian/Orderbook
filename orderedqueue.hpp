@@ -85,8 +85,8 @@ class OrderedMPMCQueue {
     size_t writeCount = writeCount_.load(std::memory_order_relaxed);
     size_t nextToConsume = nextToConsume_.load(std::memory_order_relaxed);
     
-    if (writeCount >= nextToConsume + Capacity) {
-      return false;  // Queue is full
+    if (full()) {
+      return false;
     }
 
     Node& node = buffer_[idx];
@@ -164,6 +164,28 @@ class OrderedMPMCQueue {
       return std::nullopt;
     }
 
+    // RAII cleanup guard for nextToConsume_ restoration
+    struct CleanupGuard {
+      OrderedMPMCQueue* queue;
+      size_t seq_num;
+      bool should_cleanup;
+      
+      CleanupGuard(OrderedMPMCQueue* q, size_t s) : queue(q), seq_num(s), should_cleanup(true) {}
+      
+      ~CleanupGuard() {
+        if (should_cleanup) {
+          size_t current = queue->nextToConsume_.load(std::memory_order_acquire);
+          while (seq_num < current) {
+            if (queue->nextToConsume_.compare_exchange_weak(current, seq_num, 
+                                                           std::memory_order_acq_rel, std::memory_order_acquire)) {
+              break;
+            }
+          }
+        }
+      }
+    };
+    
+    CleanupGuard cleanup_guard(this, currentReadSeqNum);
 
     // We've claimed this sequence number, now we can safely process it
     // Wait for the node to be ready and contain the correct event
@@ -180,23 +202,14 @@ class OrderedMPMCQueue {
             dequeue_order_.push_back(currentReadSeqNum);
           }
 #endif
+          cleanup_guard.should_cleanup = false;  // Disable cleanup - we're processing successfully
           goto process_event;
         } else {
         }
       }
       
       if (retry == -1 + NUM_RETRY_DEQUEUE) {
-        // Failed to get the event - need to restore nextToConsume since we claimed it
-        // Restore to the minimum of current value and our timeout sequence
-        size_t current = nextToConsume_.load(std::memory_order_acquire);
-        while (currentReadSeqNum < current) {
-          if (nextToConsume_.compare_exchange_weak(current, currentReadSeqNum, 
-                                                   std::memory_order_acq_rel, std::memory_order_acquire)) {
-            break;
-          }
-          // compare_exchange_weak updates current with the actual value, retry
-        }
-        return std::nullopt;
+        return std::nullopt;  // RAII will handle cleanup automatically
       }
       std::this_thread::yield();
     }
