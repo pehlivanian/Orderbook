@@ -1636,7 +1636,90 @@ TEST_F(OrderedMPMCQueueTest, ExternalAckMemorySafety) {
   EXPECT_EQ(final_event.data_, 999);
 }
 
-/*
+// Test: Multiple producers producing in random order, multiple consumers consuming in order
+TEST_F(OrderedMPMCQueueTest, MultiProducerMultiConsumerRandomOrder) {
+  static constexpr size_t NUM_EVENTS = 200;
+  static constexpr size_t NUM_PRODUCERS = 4;
+  static constexpr size_t NUM_CONSUMERS = 3;
+  static constexpr size_t EVENTS_PER_PRODUCER = NUM_EVENTS / NUM_PRODUCERS;
+  
+  // Create shuffled sequences for each producer
+  std::vector<std::vector<size_t>> producer_sequences(NUM_PRODUCERS);
+  for (size_t p = 0; p < NUM_PRODUCERS; ++p) {
+    producer_sequences[p].resize(EVENTS_PER_PRODUCER);
+    for (size_t i = 0; i < EVENTS_PER_PRODUCER; ++i) {
+      producer_sequences[p][i] = p * EVENTS_PER_PRODUCER + i;
+    }
+    // Shuffle each producer's sequence randomly
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::shuffle(producer_sequences[p].begin(), producer_sequences[p].end(), gen);
+  }
+  
+  // Storage for consumed events with thread-safe access
+  std::vector<TestEvent> consumed_events;
+  std::mutex consumed_mutex;
+  std::atomic<size_t> total_consumed{0};
+  std::atomic<bool> production_complete{false};
+  
+  // Launch producer threads
+  std::vector<std::thread> producers;
+  for (size_t p = 0; p < NUM_PRODUCERS; ++p) {
+    producers.emplace_back([&, p]() {
+      for (size_t seq : producer_sequences[p]) {
+        queue.enqueue(TestEvent(seq, seq * 100)); // Use blocking enqueue to guarantee delivery
+      }
+    });
+  }
+  
+  // Launch consumer threads
+  std::vector<std::thread> consumers;
+  for (size_t c = 0; c < NUM_CONSUMERS; ++c) {
+    consumers.emplace_back([&]() {
+      while (total_consumed.load() < NUM_EVENTS || !production_complete.load()) {
+	TestEvent e;
+	if (queue.try_dequeue(e, true)) {
+	  queue.mark_processed(e.seqNum_);
+          {
+            std::lock_guard<std::mutex> lock(consumed_mutex);
+	    consumed_events.push_back(e);
+          }
+          total_consumed.fetch_add(1);
+        } else {
+          // Brief yield when no events available
+          std::this_thread::yield();
+        }
+      }
+    });
+  }
+  
+  // Wait for all producers to complete
+  for (auto& producer : producers) {
+    producer.join();
+  }
+  production_complete = true;
+  
+  // Wait for all consumers to complete
+  for (auto& consumer : consumers) {
+    consumer.join();
+  }
+  
+  // Verify we consumed all events
+  auto dequeue_order = queue.get_dequeue_order();
+  EXPECT_EQ(dequeue_order.size(), NUM_EVENTS);
+  EXPECT_EQ(total_consumed.load(), NUM_EVENTS);
+  
+
+  // Check that events were dequeued in sequence
+  for (size_t i = 0; i < NUM_EVENTS; ++i) {
+    EXPECT_EQ(dequeue_order[i], i) << "Event out of order at position " << i << ": expected " << i
+                                   << " but got " << dequeue_order[i];
+  }
+
+  // Verify queue is empty
+  EXPECT_TRUE(queue.empty());
+  EXPECT_EQ(queue.size(), 0);
+}
 
 class OrderBookTest : public ::testing::Test {
  protected:
@@ -2242,8 +2325,6 @@ TEST_F(OrderBookTest, InterleavedOrdersManyCrossedBook2) {
   EXPECT_EQ(orderbook->getBestAskPrice().value_or(0),
             10039);  // Verify through public interface as well
 }
-
-*/
 
 auto main(int argc, char** argv) -> int {
   testing::InitGoogleTest(&argc, argv);
