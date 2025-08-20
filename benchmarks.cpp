@@ -44,7 +44,7 @@ EventType createEvent(unsigned long seqNum) {
 // SINGLE PRODUCER SINGLE CONSUMER (SPSC)
 //////////////////////////////////////////
 
-static void BM_SPSC_OrderedQueue(benchmark::State& state) {
+static void BM_SPSC_OrderedQueueEnqueue(benchmark::State& state) {
     OrderedMPMCQueue<EventType, 1<<14> queue;
     std::atomic<bool> done{false};
     std::atomic<size_t> consumed{0};
@@ -70,9 +70,145 @@ static void BM_SPSC_OrderedQueue(benchmark::State& state) {
     done.store(true);
     consumer.join();
 }
-BENCHMARK(BM_SPSC_OrderedQueue)->Iterations(10000);
+BENCHMARK(BM_SPSC_OrderedQueueEnqueue)->Iterations(10000);
 
-static void BM_SPSC_ConcurrentQueue(benchmark::State& state) {
+static void BM_SPSC_OrderedQueueRandomOrderEnqueue(benchmark::State& state) {
+    OrderedMPMCQueue<EventType, 1<<14> queue;
+    std::atomic<bool> done{false};
+    std::atomic<size_t> consumed{0};
+    constexpr int total_events = 10000;
+
+    // Consumer thread
+    std::thread consumer([&]() {
+        EventType event;
+        while (!done.load() || consumed.load() < static_cast<size_t>(state.iterations())) {
+            if (queue.try_dequeue(event)) {
+                consumed.fetch_add(1);
+            } else {
+                std::this_thread::yield();
+            }
+        }
+    });
+
+    std::vector<int> indices(total_events);
+    std::iota(indices.begin(), indices.end(), 0);
+    
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::shuffle(indices.begin(), indices.end(), gen);
+
+    size_t seq_num = 0;
+    for (auto _ : state) {
+        auto event = createEvent(indices[seq_num++]);
+        queue.enqueue(std::move(event));
+    }
+
+    done.store(true);
+    consumer.join();
+}
+BENCHMARK(BM_SPSC_OrderedQueueRandomOrderEnqueue)->Iterations(10000);
+
+static void BM_SPSC_OrderedQueueRandomOrderDequeue(benchmark::State& state) {
+  OrderedMPMCQueue<EventType, 1<<14> queue;
+  std::atomic<bool> done{false};
+  std::atomic<size_t> consumed{0};
+  constexpr int total_events = 10000;
+
+  std::vector<int> indices(total_events);
+  std::iota(indices.begin(), indices.end(), 0);
+
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::shuffle(indices.begin(), indices.end(), gen);
+
+  // Producer
+  for (size_t i=0; i<total_events; ++i) {
+    auto event = createEvent(indices[i]);
+    queue.enqueue(event);
+  }
+  
+  EventType event;
+  for (auto _ : state) {
+    event = queue.dequeue();
+  }
+    
+}
+BENCHMARK(BM_SPSC_OrderedQueueRandomOrderDequeue)->Iterations(10000);
+
+/*
+static void BM_SPSC_OrderedQueueTryEnqueue(benchmark::State& state) {
+  OrderedMPMCQueue<EventType, 1<<14> queue;
+  std::atomic<bool> done{false};
+  std::atomic<size_t> consumed{0};
+
+  // Consumer thread
+  std::thread consumer([&]() {
+			 EventType event;
+			 while (!done.load() || consumed.load() < static_cast<size_t>(state.iterations())) {
+			   if (queue.try_dequeue(event)) {
+			   consumed.fetch_add(1);
+			   } else {
+			     std::this_thread::yield();
+			   }
+			 }
+		       });
+  
+  size_t seq_num = 0;
+  for (auto _ : state) {
+    auto event = createEvent(seq_num++);
+    queue.try_enqueue(std::move(event));
+  }
+
+  done.store(true);
+  consumer.join();
+
+}
+BENCHMARK(BM_SPSC_OrderedQueueTryEnqueue)->Iterations(10000);
+*/
+
+static void BM_SPSC_OrderedQueueDequeue(benchmark::State& state) {
+  OrderedMPMCQueue<EventType, 1<<14> queue;  
+  std::atomic<bool> done{false};
+  std::atomic<size_t> consumed{0};
+  constexpr int total_events = 10000;
+
+  // Producer
+  for (size_t i=0; i<total_events; ++i) {
+    auto event = createEvent(i);
+    queue.enqueue(event);
+  }
+  
+  EventType event;
+  for (auto _ : state) {
+    event = queue.dequeue();
+  }
+
+}
+BENCHMARK(BM_SPSC_OrderedQueueDequeue)->Iterations(10000);
+
+/*
+static void BM_SPSC_OrderedQueueTryDequeue(benchmark::State& state) {
+  OrderedMPMCQueue<EventType, 1<<14> queue;
+  std::atomic<bool> done{false};
+  std::atomic<size_t> consumed{0};\
+  constexpr int total_events = 10000;
+
+  // Producer
+  for (size_t i=0; i<total_events; ++i) {
+    auto event = createEvent(i);
+    queue.enqueue(event);
+  }
+
+  EventType event;
+  for (auto _ : state) {
+    while (!queue.try_dequeue(event));
+  }
+
+}
+BENCHMARK(BM_SPSC_OrderedQueueTryDequeue)->Iterations(10000);
+*/
+
+static void BM_SPSC_ConcurrentQueueEnqueue(benchmark::State& state) {
     moodycamel::ConcurrentQueue<EventType> queue;
     std::atomic<bool> done{false};
     std::atomic<size_t> consumed{0};
@@ -98,7 +234,7 @@ static void BM_SPSC_ConcurrentQueue(benchmark::State& state) {
     done.store(true);
     consumer.join();
 }
-BENCHMARK(BM_SPSC_ConcurrentQueue)->Iterations(10000);
+BENCHMARK(BM_SPSC_ConcurrentQueueEnqueue)->Iterations(10000);
 
 static void BM_SPSC_DisruptorQueue(benchmark::State& state) {
     DisruptorQueue<EventType, 1<<14> queue;
@@ -131,7 +267,7 @@ BENCHMARK(BM_SPSC_DisruptorQueue)->Iterations(10000);
 // MULTIPLE PRODUCER SINGLE CONSUMER (MPSC)
 //////////////////////////////////////////////////
 
-static void BM_MPSC_OrderedQueue(benchmark::State& state) {
+static void BM_MPSC_OrderedQueueProducerConsumer(benchmark::State& state) {
     const int num_producers = 4;
     const size_t total_events = 8000;
     const size_t events_per_producer = total_events / num_producers;
@@ -175,9 +311,9 @@ static void BM_MPSC_OrderedQueue(benchmark::State& state) {
     
     state.SetItemsProcessed(total_events);
 }
-BENCHMARK(BM_MPSC_OrderedQueue)->UseRealTime();
+BENCHMARK(BM_MPSC_OrderedQueueProducerConsumer)->UseRealTime();
 
-static void BM_MPSC_ConcurrentQueue(benchmark::State& state) {
+static void BM_MPSC_ConcurrentQueueProducerConsumer(benchmark::State& state) {
     const int num_producers = 4;
     const size_t total_events = 8000;
     const size_t events_per_producer = total_events / num_producers;
@@ -221,9 +357,9 @@ static void BM_MPSC_ConcurrentQueue(benchmark::State& state) {
     
     state.SetItemsProcessed(total_events);
 }
-BENCHMARK(BM_MPSC_ConcurrentQueue)->UseRealTime();
+BENCHMARK(BM_MPSC_ConcurrentQueueProducerConsumer)->UseRealTime();
 
-static void BM_MPSC_DisruptorQueue(benchmark::State& state) {
+static void BM_MPSC_DisruptorQueueProducerConsumer(benchmark::State& state) {
     const int num_producers = 4;
     const size_t total_events = 8000;
     const size_t events_per_producer = total_events / num_producers;
@@ -268,13 +404,13 @@ static void BM_MPSC_DisruptorQueue(benchmark::State& state) {
     
     state.SetItemsProcessed(total_events);
 }
-BENCHMARK(BM_MPSC_DisruptorQueue)->UseRealTime();
+BENCHMARK(BM_MPSC_DisruptorQueueProducerConsumer)->UseRealTime();
 
 //////////////////////////////////////////////////
 // SINGLE PRODUCER MULTIPLE CONSUMER (SPMC)
 //////////////////////////////////////////////////
 
-static void BM_SPMC_OrderedQueue(benchmark::State& state) {
+static void BM_SPMC_OrderedQueueProducerConsumer(benchmark::State& state) {
     const int num_consumers = 4;
     const size_t total_events = 8000;
     
@@ -312,9 +448,9 @@ static void BM_SPMC_OrderedQueue(benchmark::State& state) {
     
     state.SetItemsProcessed(total_events);
 }
-BENCHMARK(BM_SPMC_OrderedQueue)->UseRealTime();
+BENCHMARK(BM_SPMC_OrderedQueueProducerConsumer)->UseRealTime();
 
-static void BM_SPMC_ConcurrentQueue(benchmark::State& state) {
+static void BM_SPMC_ConcurrentQueueProducerConsumer(benchmark::State& state) {
     const int num_consumers = 4;
     const size_t total_events = 8000;
     
@@ -352,9 +488,9 @@ static void BM_SPMC_ConcurrentQueue(benchmark::State& state) {
     
     state.SetItemsProcessed(total_events);
 }
-BENCHMARK(BM_SPMC_ConcurrentQueue)->UseRealTime();
+BENCHMARK(BM_SPMC_ConcurrentQueueProducerConsumer)->UseRealTime();
 
-static void BM_SPMC_DisruptorQueue(benchmark::State& state) {
+static void BM_SPMC_DisruptorQueueProducerConsumer(benchmark::State& state) {
     const int num_consumers = 4;
     const size_t total_events = 8000;
 
@@ -388,13 +524,13 @@ static void BM_SPMC_DisruptorQueue(benchmark::State& state) {
     
     state.SetItemsProcessed(total_events);
 }
-BENCHMARK(BM_SPMC_DisruptorQueue)->UseRealTime();
+BENCHMARK(BM_SPMC_DisruptorQueueProducerConsumer)->UseRealTime();
 
 //////////////////////////////////////////////////
 // MULTIPLE PRODUCER MULTIPLE CONSUMER (MPMC)
 //////////////////////////////////////////////////
 
-static void BM_MPMC_OrderedQueue(benchmark::State& state) {
+static void BM_MPMC_OrderedQueueProducerConsumer(benchmark::State& state) {
     const int num_producers = 4;
     const int num_consumers = 4;
     const size_t total_events = 8000;
@@ -444,9 +580,9 @@ static void BM_MPMC_OrderedQueue(benchmark::State& state) {
     
     state.SetItemsProcessed(total_events);
 }
-BENCHMARK(BM_MPMC_OrderedQueue)->UseRealTime();
+BENCHMARK(BM_MPMC_OrderedQueueProducerConsumer)->UseRealTime();
 
-static void BM_MPMC_ConcurrentQueue(benchmark::State& state) {
+static void BM_MPMC_ConcurrentQueueProducerConsumer(benchmark::State& state) {
     const int num_producers = 4;
     const int num_consumers = 4;
     const size_t total_events = 8000;
@@ -496,9 +632,9 @@ static void BM_MPMC_ConcurrentQueue(benchmark::State& state) {
     
     state.SetItemsProcessed(total_events);
 }
-BENCHMARK(BM_MPMC_ConcurrentQueue)->UseRealTime();
+BENCHMARK(BM_MPMC_ConcurrentQueueProducerConsumer)->UseRealTime();
 
-static void BM_MPMC_DisruptorQueue(benchmark::State& state) {
+static void BM_MPMC_DisruptorQueueProducerConsumer(benchmark::State& state) {
     const int num_producers = 4;
     const int num_consumers = 4;
     const size_t total_events = 8000;
@@ -546,7 +682,7 @@ static void BM_MPMC_DisruptorQueue(benchmark::State& state) {
     
     state.SetItemsProcessed(total_events);
 }
-BENCHMARK(BM_MPMC_DisruptorQueue)->UseRealTime();
+BENCHMARK(BM_MPMC_DisruptorQueueProducerConsumer)->UseRealTime();
 
 //////////////////////////////////////////////////
 // HIGH THROUGHPUT STRESS TEST
