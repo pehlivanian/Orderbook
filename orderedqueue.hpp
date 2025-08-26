@@ -20,6 +20,7 @@
 #include <unordered_map>
 #include <vector>
 
+#define RAII_UNIQPTR
 
 const int NUM_RETRY_DEQUEUE = 10;
 const int CACHE_LINE_SIZE = 64;
@@ -109,7 +110,6 @@ class OrderedMPMCQueue {
     node.ready.store(true, std::memory_order_release);
     writeCount_.fetch_add(1, std::memory_order_relaxed);
 
-
     return true;
   }
 
@@ -164,6 +164,31 @@ class OrderedMPMCQueue {
       return std::nullopt;
     }
 
+    // RAII via std::unique_ptr
+#ifdef RAII_UNIQPTR
+    bool should_cleanup = true;
+    struct RAIIToken {
+      int a = 44;
+    };
+
+    auto cleanup = [this, 
+		    &should_cleanup, 
+		    currentReadSeqNum](void *T){
+      if (should_cleanup) {
+	std::size_t current = this->nextToConsume_.load(std::memory_order_acquire);
+	while (currentReadSeqNum < current) {
+	  if (this->nextToConsume_.compare_exchange_weak(current, currentReadSeqNum,
+							 std::memory_order_acq_rel, 
+							 std::memory_order_acquire)) {
+	    break;
+	  }
+	}
+      }
+    };
+
+    volatile auto cleaner = std::unique_ptr<RAIIToken, decltype(cleanup)>(new RAIIToken{}, cleanup);
+#else
+
     // RAII cleanup guard for nextToConsume_ restoration
     struct CleanupGuard {
       OrderedMPMCQueue* queue;
@@ -184,9 +209,9 @@ class OrderedMPMCQueue {
         }
       }
     };
-    
-    CleanupGuard cleanup_guard(this, currentReadSeqNum);
 
+    CleanupGuard cleanup_guard(this, currentReadSeqNum);
+#endif
     // We've claimed this sequence number, now we can safely process it
     // Wait for the node to be ready and contain the correct event
     for (int retry = 0; retry < NUM_RETRY_DEQUEUE; ++retry) {
@@ -202,7 +227,11 @@ class OrderedMPMCQueue {
             dequeue_order_.push_back(currentReadSeqNum);
           }
 #endif
+#ifdef RAII_UNIQPTR
+	  should_cleanup = false;
+#else
           cleanup_guard.should_cleanup = false;  // Disable cleanup - we're processing successfully
+#endif
           goto process_event;
         } else {
         }
