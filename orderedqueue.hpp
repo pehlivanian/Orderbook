@@ -186,7 +186,7 @@ class OrderedMPMCQueue {
       }
     };
 
-    volatile auto cleaner = std::unique_ptr<RAIIToken, decltype(cleanup)>(new RAIIToken{}, cleanup);
+    auto cleaner = std::unique_ptr<RAIIToken, decltype(cleanup)>(new RAIIToken{}, cleanup);
 #else
 
     // RAII cleanup guard for nextToConsume_ restoration
