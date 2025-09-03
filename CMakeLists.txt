@@ -77,3 +77,6 @@ endif()
 
 add_executable(benchmarks benchmarks.cpp)
 target_link_libraries(benchmarks Disruptor benchmark::benchmark ${Boost_LIBRARIES} pthread)
+
+add_executable(benchmarks_new benchmarks_new.cpp)
+target_link_libraries(benchmarks_new Disruptor benchmark::benchmark ${Boost_LIBRARIES} pthread)
