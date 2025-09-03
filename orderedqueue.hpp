@@ -22,7 +22,7 @@
 #include <immintrin.h>  // For prefetch intrinsics
 #include <x86intrin.h>  // For CPU-specific optimizations
 
-const int NUM_RETRY_DEQUEUE = 3;  // Reduced from 10
+const int NUM_RETRY_DEQUEUE = 2;  // Reduced retry count
 const int CACHE_LINE_SIZE = 64;
 
 using namespace Numerics;
@@ -37,11 +37,11 @@ class OrderedMPMCQueue {
 
   static constexpr std::size_t MASK = Capacity - 1;
 
-  // Optimized cache-line sized Node with combined atomic state
+  // Highly optimized Node with combined atomic state
   struct alignas(CACHE_LINE_SIZE) Node {
     EventType event;
-    std::atomic<uint32_t> state{0};  // Combines ready/processed into single atomic
-    
+    std::atomic<uint32_t> state{0};  // Combines ready/processed flags
+
     // State bit layout: [31:2] reserved, [1] processed, [0] ready
     static constexpr uint32_t READY_BIT = 1;
     static constexpr uint32_t PROCESSED_BIT = 2;
@@ -51,37 +51,37 @@ class OrderedMPMCQueue {
     
     Node() : event{}, state{0} {}
     
-    inline bool is_ready() const noexcept {
+    // Hot path functions with always_inline optimization
+    __attribute__((always_inline)) inline bool is_ready() const noexcept {
       return state.load(std::memory_order_acquire) & READY_BIT;
     }
     
-    inline bool is_processed() const noexcept {
+    __attribute__((always_inline)) inline bool is_processed() const noexcept {
       return state.load(std::memory_order_acquire) & PROCESSED_BIT;
     }
     
-    inline void set_ready() noexcept {
+    __attribute__((always_inline)) inline void set_ready() noexcept {
       state.fetch_or(READY_BIT, std::memory_order_release);
     }
     
-    inline void clear_ready() noexcept {
+    __attribute__((always_inline)) inline void clear_ready() noexcept {
       state.fetch_and(~READY_BIT, std::memory_order_release);
     }
     
-    inline void set_processed() noexcept {
+    __attribute__((always_inline)) inline void set_processed() noexcept {
       state.fetch_or(PROCESSED_BIT, std::memory_order_release);
     }
     
-    inline void reset() noexcept {
+    __attribute__((always_inline)) inline void reset() noexcept {
       state.store(0, std::memory_order_release);
     }
   };
   
   static_assert(sizeof(Node) == CACHE_LINE_SIZE, "Node must be exactly one cache line");
 
-
   alignas(CACHE_LINE_SIZE) std::array<Node, Capacity> buffer_;
   
-  // Separate hot data to different cache lines to reduce false sharing
+  // Separate hot counters to different cache lines
   alignas(CACHE_LINE_SIZE) std::atomic<size_t> writeCount_{0};
   alignas(CACHE_LINE_SIZE) std::atomic<size_t> nextToConsume_{0};
 
@@ -91,7 +91,8 @@ class OrderedMPMCQueue {
   std::vector<std::size_t> dequeue_order_;
 #endif
 
-  inline size_t getIndex(size_t seqNum) const noexcept {
+  // Fast indexing with compile-time optimization
+  __attribute__((always_inline, const)) inline size_t getIndex(size_t seqNum) const noexcept {
     return seqNum & MASK;
   }
 
@@ -105,50 +106,69 @@ class OrderedMPMCQueue {
   OrderedMPMCQueue(OrderedMPMCQueue&&) = delete;
   OrderedMPMCQueue& operator=(OrderedMPMCQueue&&) = delete;
 
-  void enqueue(EventType event) {
-    while (!try_enqueue(std::move(event))) {
-      std::this_thread::yield();
+  __attribute__((hot)) void enqueue(EventType event) {
+    // Optimized spin with hardware pause
+    int spin_count = 0;
+    while (__builtin_expect(!try_enqueue(std::move(event)), 0)) {
+      if (spin_count < 32) {
+        _mm_pause();
+      } else {
+        std::this_thread::yield();
+        spin_count = 0;
+        continue;
+      }
+      ++spin_count;
     }
   }
 
-  bool try_enqueue(EventType event) {
+  __attribute__((hot, flatten)) bool try_enqueue(EventType event) noexcept {
     const size_t seqNum = event.seqNum_;
     
-    // Fast capacity check with relaxed ordering
-    if (__builtin_expect(full(), 0)) {
+    // Fast capacity check with branch prediction hints
+    if (__builtin_expect(full(), 0)) [[unlikely]] {
       return false;
     }
 
     const size_t idx = getIndex(seqNum);
     Node& node = buffer_[idx];
     
-    // Prefetch next cache line for sequential access pattern
+    // Prefetch for better cache behavior
     _mm_prefetch(&buffer_[getIndex(seqNum + 4)], _MM_HINT_T0);
     
-    // Check if slot is available using single atomic load
+    // Fast path: check if slot is available
     uint32_t currentState = node.state.load(std::memory_order_acquire);
-    if (__builtin_expect(currentState & Node::READY_BIT, 0)) {
+    if (__builtin_expect(currentState & Node::READY_BIT, 0)) [[unlikely]] {
       if (node.event.seqNum_ >= seqNum) {
         return false;  // Slot still in use
       }
     }
 
-    // Reset state and set event in one go to reduce cache line bouncing
+    // Store event and mark ready atomically
     node.event = std::move(event);
     node.state.store(Node::READY_BIT, std::memory_order_release);
     
-    // Update write counter with relaxed ordering
+    // Update write counter
     writeCount_.fetch_add(1, std::memory_order_relaxed);
 
     return true;
   }
 
-  EventType dequeue(bool external_ack=false) {
-    EventType e;
-    while (!try_dequeue(e, external_ack)) {
-      std::this_thread::yield();
+  __attribute__((hot)) EventType dequeue(bool external_ack = false) {
+    std::optional<EventType> opt;
+    int spin_count = 0;
+    
+    while (__builtin_expect(!(opt = try_dequeue(external_ack)), 0)) {
+      if (spin_count < 16) {
+        _mm_pause();
+      } else {
+        std::this_thread::yield();
+        spin_count = 0;
+        continue;
+      }
+      ++spin_count;
     }
-    return e;
+    
+    return std::move(*opt);
   }
 
   bool try_dequeue(EventType& e, bool external_ack=false) {
@@ -160,22 +180,22 @@ class OrderedMPMCQueue {
     return false;
   }
 
-  std::optional<EventType> try_dequeue(bool external_ack=false) {
+  __attribute__((hot, flatten)) std::optional<EventType> try_dequeue(bool external_ack = false) noexcept {
     // Load current sequence with acquire ordering
     size_t currentReadSeqNum = nextToConsume_.load(std::memory_order_acquire);
     const size_t idx = getIndex(currentReadSeqNum);
     Node& node = buffer_[idx];
     
-    // Prefetch next nodes for sequential access
+    // Prefetch for sequential access
     _mm_prefetch(&buffer_[getIndex(currentReadSeqNum + 1)], _MM_HINT_T0);
     _mm_prefetch(&buffer_[getIndex(currentReadSeqNum + 2)], _MM_HINT_T1);
     
-    // Fast path: Check ordering constraint with minimal atomic ops
-    if (__builtin_expect(currentReadSeqNum > 0, 1)) {
+    // Fast ordering constraint check
+    if (__builtin_expect(currentReadSeqNum > 0, 1)) [[likely]] {
       const Node& prevNode = buffer_[getIndex(currentReadSeqNum - 1)];
       uint32_t prevState = prevNode.state.load(std::memory_order_acquire);
       
-      if (__builtin_expect(!(prevState & Node::PROCESSED_BIT), 0)) {
+      if (__builtin_expect(!(prevState & Node::PROCESSED_BIT), 0)) [[unlikely]] {
         // Check if previous sequence is missing or not processed
         if (!(prevState & Node::READY_BIT) || 
             prevNode.event.seqNum_ == currentReadSeqNum - 1) {
@@ -184,26 +204,26 @@ class OrderedMPMCQueue {
       }
     }
 
-    // Try to claim this sequence number with compare-and-swap
+    // Try to claim this sequence number
     size_t expected = currentReadSeqNum;
     if (__builtin_expect(!nextToConsume_.compare_exchange_strong(
         expected, currentReadSeqNum + 1,
-        std::memory_order_acq_rel, std::memory_order_acquire), 0)) {
+        std::memory_order_acq_rel, std::memory_order_acquire), 0)) [[unlikely]] {
       return std::nullopt;
     }
 
-    // We've claimed the sequence number, now wait for the event
+    // Optimized spin-wait for the event
     uint32_t state;
     for (int retry = 0; retry < NUM_RETRY_DEQUEUE; ++retry) {
       state = node.state.load(std::memory_order_acquire);
       
-      if (__builtin_expect(state & Node::READY_BIT, 1)) {
-        if (__builtin_expect(node.event.seqNum_ == currentReadSeqNum, 1)) {
+      if (__builtin_expect(state & Node::READY_BIT, 1)) [[likely]] {
+        if (__builtin_expect(node.event.seqNum_ == currentReadSeqNum, 1)) [[likely]] {
           goto process_event;
         }
       }
       
-      if (__builtin_expect(retry == NUM_RETRY_DEQUEUE - 1, 0)) {
+      if (__builtin_expect(retry == NUM_RETRY_DEQUEUE - 1, 0)) [[unlikely]] {
         // Cleanup: restore the sequence number
         size_t current = nextToConsume_.load(std::memory_order_acquire);
         while (currentReadSeqNum < current) {
@@ -216,10 +236,8 @@ class OrderedMPMCQueue {
         return std::nullopt;
       }
       
-      // Exponential backoff with CPU pause
-      for (int i = 0; i < (1 << retry); ++i) {
-        _mm_pause();  // x86 PAUSE instruction for better spin-wait
-      }
+      // Hardware pause for better spin performance
+      _mm_pause();
     }
     
   process_event:
@@ -231,11 +249,11 @@ class OrderedMPMCQueue {
     }
 #endif
 
-    // Copy the event (compiler will optimize this)
+    // Copy the event
     EventType result = node.event;
     
     if (!external_ack) {
-      // Mark processed immediately with single atomic operation
+      // Mark processed immediately
       node.state.store(Node::PROCESSED_BIT, std::memory_order_release);
     } else {
       // Just clear ready bit
@@ -245,14 +263,13 @@ class OrderedMPMCQueue {
     return result;
   }
 
-  void mark_processed(size_t seqNum) {
+  __attribute__((always_inline)) inline void mark_processed(size_t seqNum) noexcept {
     const size_t idx = getIndex(seqNum);
     Node& node = buffer_[idx];
-    // Set processed bit while preserving other state
     node.set_processed();
   }
 
-  bool empty() const {
+  __attribute__((always_inline, pure)) inline bool empty() const noexcept {
     size_t current = nextToConsume_.load(std::memory_order_relaxed);
     const size_t idx = getIndex(current);
     return !buffer_[idx].is_ready();
@@ -263,13 +280,13 @@ class OrderedMPMCQueue {
            nextToConsume_.load(std::memory_order_relaxed) + Capacity;
   }
 
-  size_t size() const {
+  __attribute__((always_inline, pure)) inline size_t size() const noexcept {
     size_t writeCount = writeCount_.load(std::memory_order_relaxed);
     size_t nextToConsume = nextToConsume_.load(std::memory_order_relaxed);
     return writeCount >= nextToConsume ? writeCount - nextToConsume : 0;
   }
 
-  size_t getNextToConsume() const {
+  __attribute__((always_inline, pure)) inline size_t getNextToConsume() const noexcept {
     return nextToConsume_.load(std::memory_order_relaxed);
   }
 
