@@ -4,19 +4,47 @@
 #include <atomic>
 #include <thread>
 #include <chrono>
+#include <algorithm>
 #include <stdexcept>
 #include <functional>
 #include <vector>
-#include "Disruptor/Disruptor.h"
-#include "Disruptor/ThreadPerTaskScheduler.h"
-#include "Disruptor/BusySpinWaitStrategy.h"
-#include "Disruptor/WorkerPool.h"
-#include "Disruptor/IWorkHandler.h"
-#include "Disruptor/IgnoreExceptionHandler.h"
-#include "Disruptor/BasicExecutor.h"
+#include <Disruptor/Disruptor.h>
+#include <Disruptor/ThreadPerTaskScheduler.h>
+#include <Disruptor/BusySpinWaitStrategy.h>
+#include <Disruptor/WorkerPool.h>
+#include <Disruptor/ITaskScheduler.h>
+#include <Disruptor/IWaitStrategy.h>
+#include <Disruptor/IgnoreExceptionHandler.h>
+#include <Disruptor/BasicExecutor.h>
+
+template<typename EventType>
+struct DisruptorQueueConfig {
+
+  explicit DisruptorQueueConfig() :
+    m_taskScheduler_{std::make_shared<Disruptor::ThreadPerTaskScheduler>()},
+    m_waitStrategy_{std::make_shared<Disruptor::BusySpinWaitStrategy>()}
+  {}
+
+  std::shared_ptr<Disruptor::ITaskScheduler> m_taskScheduler_;
+  std::shared_ptr<Disruptor::IWaitStrategy> m_waitStrategy_;
+
+  DisruptorQueueConfig put_taskScheduler(std::shared_ptr<Disruptor::ITaskScheduler> rhs) {
+    this->m_taskScheduler_ = std::move(rhs);
+    return *this;
+  }
+
+  DisruptorQueueConfig put_waitStrategy(std::shared_ptr<Disruptor::IWaitStrategy> rhs) {
+    this->m_waitStrategy_ = std::move(rhs);
+    return *this;
+  }
+
+};
 
 template<typename EventType, std::size_t RingBufferSize = 1024>
 class DisruptorQueue {
+
+  int num_threads = std::max(std::thread::hardware_concurrency(), 2u);
+
 public:
     explicit DisruptorQueue() 
         : m_taskScheduler(std::make_shared<Disruptor::ThreadPerTaskScheduler>())
@@ -32,6 +60,23 @@ public:
         , m_consumersStarted(false)
     {
     }
+
+  DisruptorQueue(const DisruptorQueueConfig<EventType>& rhs) :
+    m_taskScheduler(std::move(rhs.m_taskScheduler_)),
+    m_waitStrategy(std::move(rhs.m_waitStrategy_)),
+    m_disruptor(std::make_shared<Disruptor::disruptor<EventType>>(
+								  [](){ return EventType{}; },
+								  RingBufferSize,
+								  m_taskScheduler,
+								  Disruptor::ProducerType::Multi,
+								  m_waitStrategy)),
+    m_ringBuffer(nullptr),
+    m_started(false),
+    m_consumersStarted(false)
+  {}
+		
+		   
+		    
 
     ~DisruptorQueue() {
         shutdown();
@@ -53,7 +98,7 @@ public:
                 m_consumersStarted = true;
             }
             
-            m_taskScheduler->start();
+            m_taskScheduler->start(num_threads);
             m_ringBuffer = m_disruptor->start();
             m_started = true;
         }
@@ -130,8 +175,8 @@ private:
         Handler m_handler;
     };
 
-    std::shared_ptr<Disruptor::ThreadPerTaskScheduler> m_taskScheduler;
-    std::shared_ptr<Disruptor::BusySpinWaitStrategy> m_waitStrategy;
+    std::shared_ptr<Disruptor::ITaskScheduler> m_taskScheduler;
+    std::shared_ptr<Disruptor::IWaitStrategy> m_waitStrategy;
     std::shared_ptr<Disruptor::disruptor<EventType>> m_disruptor;
     std::shared_ptr<Disruptor::RingBuffer<EventType>> m_ringBuffer;
     std::vector<std::shared_ptr<Disruptor::IWorkHandler<EventType>>> m_workHandlers;

@@ -3,6 +3,7 @@
 #include <vector>
 #include <chrono>
 #include <random>
+#include <cmath>
 
 // MoodyCamel ConcurrentQueue
 #include "include/concurrentqueue.h"
@@ -14,10 +15,19 @@
 #include "Disruptor/WorkerPool.h"
 #include "Disruptor/IWorkHandler.h"
 #include "Disruptor/IgnoreExceptionHandler.h"
+#include "Disruptor/YieldingWaitStrategy.h"
 #include "Disruptor/BasicExecutor.h"
 
 // OrderedMPMCQueue
 #include "orderedqueue.hpp"
+
+// ConcurrentQueue
+const std::size_t cc_block_size = moodycamel::ConcurrentQueueDefaultTraits::BLOCK_SIZE;
+
+std::size_t cc_qsize(std::size_t num_its, std::size_t num_producers) {
+  return   (ceil(num_its / cc_block_size) - 1 + 2 *  num_producers) * cc_block_size;
+}
+  
 
 // DisruptorQueue
 #include "disruptorqueue.hpp"
@@ -39,6 +49,53 @@ using EventType = BenchmarkEvent;
 EventType createEvent(unsigned long seqNum) {
     return EventType{seqNum, 0.0, 1, static_cast<float>(seqNum)};
 }
+
+//////////////////////////////////////////////////
+// GENERAL QUEUES; SETUP TIMES
+//////////////////////////////////////////////////
+
+static void BM_SPSC_OrderedQueueSetupQueueTime(benchmark::State& state) {
+  const int num_consumers = 12;
+  const int num_producers = 4;
+  
+  for (auto _ : state) {
+    OrderedMPMCQueue<EventType, 8192> queue;
+    benchmark::DoNotOptimize(queue);
+    benchmark::ClobberMemory();
+  }
+}
+BENCHMARK(BM_SPSC_OrderedQueueSetupQueueTime)->UseRealTime();
+
+static void BM_SPSC_ConcurrentQueueSetupQueueTime(benchmark::State& state) {
+  const int num_consumers = 12;
+  const int num_producers = 4;
+  const size_t total_events = 8000;
+  std::size_t sz = cc_qsize(total_events, num_producers);
+    
+  for (auto _ : state) {
+    moodycamel::ConcurrentQueue<EventType> queue(sz);
+    benchmark::DoNotOptimize(queue);
+    benchmark::ClobberMemory();
+  }
+}
+BENCHMARK(BM_SPSC_ConcurrentQueueSetupQueueTime)->UseRealTime();
+
+static void BM_SPSC_DisruptorQueueSetupQueueTime(benchmark::State& state) {
+  const int num_consumers = 12;
+  const int num_producers = 4;
+  const size_t total_events = 8000;
+  const size_t events_per_producer = total_events / num_producers;
+  
+  auto config = DisruptorQueueConfig<EventType>{};
+  config.put_taskScheduler(std::make_shared<Disruptor::ThreadPerTaskScheduler>());
+
+  for (auto _ : state) {
+    DisruptorQueue<EventType, 8192> queue(config);
+    benchmark::DoNotOptimize(queue);
+    benchmark::ClobberMemory();
+  }
+}
+BENCHMARK(BM_SPSC_DisruptorQueueSetupQueueTime)->UseRealTime();
 
 //////////////////////////////////////////
 // SINGLE PRODUCER SINGLE CONSUMER (SPSC)
@@ -212,8 +269,14 @@ static void BM_SPSC_OrderedQueueTryDequeue(benchmark::State& state) {
 BENCHMARK(BM_SPSC_OrderedQueueTryDequeue)->Iterations(10000);
 */
 
+
 static void BM_SPSC_ConcurrentQueueEnqueue(benchmark::State& state) {
-    moodycamel::ConcurrentQueue<EventType> queue;
+
+  std::size_t num_its = state.max_iterations;
+  std::size_t num_producers = 1;
+  std::size_t sz = cc_qsize(num_its, num_producers);
+   
+  moodycamel::ConcurrentQueue<EventType> queue(sz);
     std::atomic<bool> done{false};
     std::atomic<size_t> consumed{0};
     
@@ -241,7 +304,12 @@ static void BM_SPSC_ConcurrentQueueEnqueue(benchmark::State& state) {
 BENCHMARK(BM_SPSC_ConcurrentQueueEnqueue)->Iterations(10000);
 
 static void BM_SPSC_ConcurrentQueueDequeue(benchmark::State& state) {
-  moodycamel::ConcurrentQueue<EventType> queue;
+
+  std::size_t num_its = state.max_iterations;
+  std::size_t num_producers = 1;
+  std::size_t sz = cc_qsize(num_its, num_producers);
+
+  moodycamel::ConcurrentQueue<EventType> queue(sz);
   std::atomic<bool> done{false};
   std::atomic<size_t> consumed{0};
   const int total_events = 10000;
@@ -317,6 +385,167 @@ static void BM_SPSC_DisruptorQueueDequeue(benchmark::State& state) {
 }
 BENCHMARK(BM_SPSC_DisruptorQueueDequeue)->Iterations(10000);
 
+
+static void BM_SPSC_OrderedQueueProducerConsumer(benchmark::State& state) {
+    const int num_producers = 1;
+    const size_t total_events = 8000;
+    const size_t events_per_producer = total_events / num_producers;
+    
+    for (auto _ : state) {
+      
+      state.PauseTiming();
+      
+      OrderedMPMCQueue<EventType, 8192> queue;
+      std::atomic<bool> done{false};
+      std::atomic<size_t> consumed{0};
+      
+      state.ResumeTiming();
+        
+        // Consumer thread
+        std::thread consumer([&]() {
+            EventType event;
+            while (!done.load() || consumed.load() < total_events) {
+                if (queue.try_dequeue(event)) {
+                    consumed.fetch_add(1);
+                } else {
+                    std::this_thread::yield();
+                }
+            }
+        });
+        
+        // Producer threads
+        std::vector<std::thread> producers;
+        for (int i = 0; i < num_producers; ++i) {
+            producers.emplace_back([&, i]() {
+                size_t base_seq = i * events_per_producer;
+                for (size_t j = 0; j < events_per_producer; ++j) {
+                    auto event = createEvent(base_seq + j);
+                    queue.enqueue(std::move(event));
+                }
+            });
+        }
+        
+        // Wait for producers to finish
+        for (auto& t : producers) {
+            t.join();
+        }
+        done.store(true);
+        consumer.join();
+    }
+    
+    state.SetItemsProcessed(total_events);
+
+}
+BENCHMARK(BM_SPSC_OrderedQueueProducerConsumer)->UseRealTime();
+
+static void BM_SPSC_ConcurrentQueueProducerConsumer(benchmark::State& state) {
+    const int num_producers = 1;
+    const size_t total_events = 8000;
+    const size_t events_per_producer = total_events / num_producers;
+    std::size_t num_its = state.max_iterations;
+    std::size_t sz = cc_qsize(total_events, num_producers);
+    
+    for (auto _ : state) {
+      
+      state.PauseTiming();
+
+      moodycamel::ConcurrentQueue<EventType> queue(sz);
+      std::atomic<bool> done{false};
+      std::atomic<size_t> consumed{0};
+      
+      state.ResumeTiming();
+        
+        // Consumer thread
+        std::thread consumer([&]() {
+            EventType event;
+            while (!done.load() || consumed.load() < total_events) {
+                if (queue.try_dequeue(event)) {
+                    consumed.fetch_add(1);
+                } else {
+                    std::this_thread::yield();
+                }
+            }
+        });
+        
+        // Producer threads
+        std::vector<std::thread> producers;
+        for (int i = 0; i < num_producers; ++i) {
+            producers.emplace_back([&, i]() {
+                size_t base_seq = i * events_per_producer;
+                for (size_t j = 0; j < events_per_producer; ++j) {
+                    auto event = createEvent(base_seq + j);
+                    queue.enqueue(std::move(event));
+                }
+            });
+        }
+        
+        // Wait for producers to finish
+        for (auto& t : producers) {
+            t.join();
+        }
+        done.store(true);
+        consumer.join();
+    }
+    
+    state.SetItemsProcessed(total_events);
+}
+BENCHMARK(BM_SPSC_ConcurrentQueueProducerConsumer)->UseRealTime();
+
+static void BM_SPSC_DisruptorQueueProducerConsumer(benchmark::State& state) {
+    const int num_producers = 1;
+    const size_t total_events = 8000;
+    const size_t events_per_producer = total_events / num_producers;
+
+    auto config = DisruptorQueueConfig<EventType>{};
+    config.put_waitStrategy(std::make_shared<Disruptor::YieldingWaitStrategy>());
+    
+    for (auto _ : state) {
+      state.PauseTiming();
+
+      DisruptorQueue<EventType, 8192> queue(config);
+      std::atomic<bool> done{false};
+      std::atomic<size_t> consumed{0};
+      
+      state.ResumeTiming();
+        
+        // Single consumer
+        queue.addConsumer([&](EventType& event) {
+            consumed.fetch_add(1);
+        });
+        
+        queue.start();
+        
+        // Producer threads
+        std::vector<std::thread> producers;
+        for (int i = 0; i < num_producers; ++i) {
+            producers.emplace_back([&, i]() {
+                size_t base_seq = i * events_per_producer;
+                for (size_t j = 0; j < events_per_producer; ++j) {
+                    auto event = createEvent(base_seq + j);
+                    queue.enqueue(std::move(event));
+                }
+            });
+        }
+        
+        // Wait for producers to finish
+        for (auto& t : producers) {
+            t.join();
+        }
+        
+        // Wait for all events to be consumed
+        while (consumed.load() < total_events) {
+            std::this_thread::yield();
+        }
+        
+        done.store(true);
+        queue.shutdown();
+    }
+    
+    state.SetItemsProcessed(total_events);
+}
+BENCHMARK(BM_SPSC_DisruptorQueueProducerConsumer)->UseRealTime();
+
+
 //////////////////////////////////////////////////
 // MULTIPLE PRODUCER SINGLE CONSUMER (MPSC)
 //////////////////////////////////////////////////
@@ -327,9 +556,14 @@ static void BM_MPSC_OrderedQueueProducerConsumer(benchmark::State& state) {
     const size_t events_per_producer = total_events / num_producers;
     
     for (auto _ : state) {
-        OrderedMPMCQueue<EventType, 8192> queue;
-        std::atomic<bool> done{false};
-        std::atomic<size_t> consumed{0};
+      
+      state.PauseTiming();
+      
+      OrderedMPMCQueue<EventType, 8192> queue;
+      std::atomic<bool> done{false};
+      std::atomic<size_t> consumed{0};
+      
+      state.ResumeTiming();
         
         // Consumer thread
         std::thread consumer([&]() {
@@ -371,11 +605,18 @@ static void BM_MPSC_ConcurrentQueueProducerConsumer(benchmark::State& state) {
     const int num_producers = 4;
     const size_t total_events = 8000;
     const size_t events_per_producer = total_events / num_producers;
+    std::size_t num_its = state.max_iterations;
+    std::size_t sz = cc_qsize(total_events, num_producers);
     
     for (auto _ : state) {
-        moodycamel::ConcurrentQueue<EventType> queue;
-        std::atomic<bool> done{false};
-        std::atomic<size_t> consumed{0};
+      
+      state.PauseTiming();
+
+      moodycamel::ConcurrentQueue<EventType> queue(sz);
+      std::atomic<bool> done{false};
+      std::atomic<size_t> consumed{0};
+      
+      state.ResumeTiming();
         
         // Consumer thread
         std::thread consumer([&]() {
@@ -417,11 +658,18 @@ static void BM_MPSC_DisruptorQueueProducerConsumer(benchmark::State& state) {
     const int num_producers = 4;
     const size_t total_events = 8000;
     const size_t events_per_producer = total_events / num_producers;
+
+    auto config = DisruptorQueueConfig<EventType>{};
+    config.put_waitStrategy(std::make_shared<Disruptor::YieldingWaitStrategy>());
     
     for (auto _ : state) {
-        DisruptorQueue<EventType, 8192> queue;
-        std::atomic<bool> done{false};
-        std::atomic<size_t> consumed{0};
+      state.PauseTiming();
+
+      DisruptorQueue<EventType, 8192> queue(config);
+      std::atomic<bool> done{false};
+      std::atomic<size_t> consumed{0};
+      
+      state.ResumeTiming();
         
         // Single consumer
         queue.addConsumer([&](EventType& event) {
@@ -469,9 +717,14 @@ static void BM_SPMC_OrderedQueueProducerConsumer(benchmark::State& state) {
     const size_t total_events = 8000;
     
     for (auto _ : state) {
-        OrderedMPMCQueue<EventType, 8192> queue;
-        std::atomic<bool> done{false};
-        std::atomic<size_t> consumed{0};
+
+      state.PauseTiming();
+
+      OrderedMPMCQueue<EventType, 8192> queue;
+      std::atomic<bool> done{false};
+      std::atomic<size_t> consumed{0};
+
+      state.ResumeTiming();
         
         // Consumer threads
         std::vector<std::thread> consumers;
@@ -507,11 +760,19 @@ BENCHMARK(BM_SPMC_OrderedQueueProducerConsumer)->UseRealTime();
 static void BM_SPMC_ConcurrentQueueProducerConsumer(benchmark::State& state) {
     const int num_consumers = 4;
     const size_t total_events = 8000;
+    std::size_t num_producers = 1;
+    std::size_t sz = cc_qsize(total_events, num_producers);
     
+
     for (auto _ : state) {
-        moodycamel::ConcurrentQueue<EventType> queue;
-        std::atomic<bool> done{false};
-        std::atomic<size_t> consumed{0};
+
+      state.PauseTiming();
+
+      moodycamel::ConcurrentQueue<EventType> queue(sz);
+      std::atomic<bool> done{false};
+      std::atomic<size_t> consumed{0};
+
+      state.ResumeTiming();
         
         // Consumer threads
         std::vector<std::thread> consumers;
@@ -548,10 +809,18 @@ static void BM_SPMC_DisruptorQueueProducerConsumer(benchmark::State& state) {
     const int num_consumers = 4;
     const size_t total_events = 8000;
 
+    auto config = DisruptorQueueConfig<EventType>{};
+    config.put_waitStrategy(std::make_shared<Disruptor::YieldingWaitStrategy>());
+
     for (auto _ : state) {
-        DisruptorQueue<EventType, 8192> queue;
-        std::atomic<bool> done{false};
-        std::atomic<size_t> consumed{0};
+
+      state.PauseTiming();
+
+      DisruptorQueue<EventType, 8192> queue(config);
+      std::atomic<bool> done{false};
+      std::atomic<size_t> consumed{0};
+
+      state.ResumeTiming();
         
         for (int i = 0; i < num_consumers; ++i) {
             queue.addConsumer([&](EventType& event) {
@@ -591,9 +860,14 @@ static void BM_MPMC_OrderedQueueProducerConsumer(benchmark::State& state) {
     const size_t events_per_producer = total_events / num_producers;
     
     for (auto _ : state) {
-        OrderedMPMCQueue<EventType, 8192> queue;
-        std::atomic<bool> done{false};
-        std::atomic<size_t> consumed{0};
+
+      state.PauseTiming();
+
+      OrderedMPMCQueue<EventType, 8192> queue;
+      std::atomic<bool> done{false};
+      std::atomic<size_t> consumed{0};
+
+      state.ResumeTiming();
         
         // Consumer threads
         std::vector<std::thread> consumers;
@@ -641,11 +915,17 @@ static void BM_MPMC_ConcurrentQueueProducerConsumer(benchmark::State& state) {
     const int num_consumers = 4;
     const size_t total_events = 8000;
     const size_t events_per_producer = total_events / num_producers;
-    
+    std::size_t sz = cc_qsize(total_events, num_producers);    
+
     for (auto _ : state) {
-        moodycamel::ConcurrentQueue<EventType> queue;
-        std::atomic<bool> done{false};
-        std::atomic<size_t> consumed{0};
+
+      state.PauseTiming();
+
+      moodycamel::ConcurrentQueue<EventType> queue(sz);
+      std::atomic<bool> done{false};
+      std::atomic<size_t> consumed{0};
+
+      state.ResumeTiming();
         
         // Consumer threads
         std::vector<std::thread> consumers;
@@ -694,10 +974,18 @@ static void BM_MPMC_DisruptorQueueProducerConsumer(benchmark::State& state) {
     const size_t total_events = 8000;
     const size_t events_per_producer = total_events / num_producers;
 
+    auto config = DisruptorQueueConfig<EventType>{};
+    config.put_waitStrategy(std::make_shared<Disruptor::YieldingWaitStrategy>());
+
     for (auto _ : state) {
-        DisruptorQueue<EventType, 8192> queue;
-        std::atomic<bool> done{false};
-        std::atomic<size_t> consumed{0};
+
+      state.PauseTiming();
+
+      DisruptorQueue<EventType, 8192> queue(config);
+      std::atomic<bool> done{false};
+      std::atomic<size_t> consumed{0};
+
+      state.ResumeTiming();
 
         // Consumer threads
         for (int i = 0; i < num_consumers; ++i) {
@@ -749,9 +1037,14 @@ static void BM_HighThroughput_OrderedQueue(benchmark::State& state) {
     const size_t events_per_producer = total_events / num_producers;
     
     for (auto _ : state) {
-        OrderedMPMCQueue<EventType, 8192> queue;
-        std::atomic<bool> done{false};
-        std::atomic<size_t> consumed{0};
+
+      state.PauseTiming();
+
+      OrderedMPMCQueue<EventType, 8192> queue;
+      std::atomic<bool> done{false};
+      std::atomic<size_t> consumed{0};
+
+      state.ResumeTiming();
         
         // Consumer threads
         std::vector<std::thread> consumers;
@@ -800,11 +1093,17 @@ static void BM_HighThroughput_ConcurrentQueue(benchmark::State& state) {
     const int num_consumers = 4;
     const size_t total_events = 8000;
     const size_t events_per_producer = total_events / num_producers;
-    
+    std::size_t sz = cc_qsize(total_events, num_producers);
+
     for (auto _ : state) {
-        moodycamel::ConcurrentQueue<EventType> queue;
-        std::atomic<bool> done{false};
-        std::atomic<size_t> consumed{0};
+
+      state.PauseTiming();
+
+      moodycamel::ConcurrentQueue<EventType> queue(sz);
+      std::atomic<bool> done{false};
+      std::atomic<size_t> consumed{0};
+
+      state.ResumeTiming();
         
         // Consumer threads
         std::vector<std::thread> consumers;
@@ -853,9 +1152,12 @@ static void BM_HighThroughput_DisruptorQueue(benchmark::State& state) {
     const int num_consumers = 4;
     const size_t total_events = 8000;
     const size_t events_per_producer = total_events / num_producers;
+
+    auto config = DisruptorQueueConfig<EventType>{};
+    config.put_waitStrategy(std::make_shared<Disruptor::YieldingWaitStrategy>());
     
     for (auto _ : state) {
-        DisruptorQueue<EventType, 8192> queue;
+      DisruptorQueue<EventType, 8192> queue(config);
         std::atomic<bool> done{false};
         std::atomic<size_t> consumed{0};
         
@@ -904,7 +1206,12 @@ BENCHMARK(BM_HighThroughput_DisruptorQueue)->Unit(benchmark::kMillisecond)->UseR
 //////////////////////////////////////////////////
 
 static void BM_BulkOperations_ConcurrentQueue(benchmark::State& state) {
-    moodycamel::ConcurrentQueue<EventType> queue;
+
+    std::size_t num_its = state.max_iterations;
+    std::size_t num_producers = 1;
+    std::size_t sz = cc_qsize(num_its, num_producers);
+
+    moodycamel::ConcurrentQueue<EventType> queue(sz);
     const size_t bulk_size = 500;
     
     for (auto _ : state) {
