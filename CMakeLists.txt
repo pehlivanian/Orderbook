@@ -80,3 +80,6 @@ target_link_libraries(benchmarks Disruptor benchmark::benchmark ${Boost_LIBRARIE
 
 add_executable(benchmarks_new benchmarks_new.cpp)
 target_link_libraries(benchmarks_new Disruptor benchmark::benchmark ${Boost_LIBRARIES} pthread)
+
+add_executable(high_throughput_bench high_throughput_bench.cpp)
+target_link_libraries(high_throughput_bench pthread)
