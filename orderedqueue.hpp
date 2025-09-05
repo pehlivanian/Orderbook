@@ -195,7 +195,8 @@ class OrderedMPMCQueue {
       const Node& prevNode = buffer_[getIndex(currentReadSeqNum - 1)];
       uint32_t prevState = prevNode.state.load(std::memory_order_acquire);
       
-      if (__builtin_expect(!(prevState & Node::PROCESSED_BIT), 0)) [[unlikely]] {
+      // if (__builtin_expect(!(prevState & Node::PROCESSED_BIT), 0)) [[unlikely]] {
+      if (!(prevState & Node::PROCESSED_BIT)) {
         // Check if previous sequence is missing or not processed
         if (!(prevState & Node::READY_BIT) || 
             prevNode.event.seqNum_ == currentReadSeqNum - 1) {
@@ -206,10 +207,14 @@ class OrderedMPMCQueue {
 
     // Try to claim this sequence number
     size_t expected = currentReadSeqNum;
-    if (__builtin_expect(!nextToConsume_.compare_exchange_strong(
-        expected, currentReadSeqNum + 1,
-        std::memory_order_acq_rel, std::memory_order_acquire), 0)) [[unlikely]] {
-      return std::nullopt;
+    // if (__builtin_expect(!nextToConsume_.compare_exchange_strong(
+    //     expected, currentReadSeqNum + 1,
+    //     std::memory_order_acq_rel, std::memory_order_acquire), 0)) [[unlikely]] {
+	if (!nextToConsume_.compare_exchange_strong(
+						    expected, currentReadSeqNum + 1,
+						    std::memory_order_acq_rel,
+						    std::memory_order_acquire)) {
+	  return std::nullopt;
     }
 
     // Optimized spin-wait for the event
